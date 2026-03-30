@@ -33,11 +33,11 @@ import { ToolAbortError } from "./tool-errors";
 // Types
 // =============================================================================
 
-const OptionItem = Type.Object({
+export const OptionItem = Type.Object({
 	label: Type.String({ description: "Display label" }),
 });
 
-const QuestionItem = Type.Object({
+export const QuestionItem = Type.Object({
 	id: Type.String({ description: "Question ID, e.g. 'auth', 'cache'" }),
 	question: Type.String({ description: "Question text" }),
 	options: Type.Array(OptionItem, { description: "Available options" }),
@@ -45,7 +45,7 @@ const QuestionItem = Type.Object({
 	recommended: Type.Optional(Type.Number({ description: "Index of recommended option (0-indexed)" })),
 });
 
-const askSchema = Type.Object({
+export const askSchema = Type.Object({
 	questions: Type.Array(QuestionItem, { description: "Questions to ask", minItems: 1 }),
 });
 

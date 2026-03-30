@@ -6,29 +6,12 @@
  * but delegates question display and input collection to the parent session.
  */
 import type { AgentTool, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
-import { type Static, Type } from "@sinclair/typebox";
+import { untilAborted } from "@oh-my-pi/pi-utils";
+import type { Static } from "@sinclair/typebox";
 import { renderPromptTemplate } from "../config/prompt-templates";
 import askDescription from "../prompts/tools/ask.md" with { type: "text" };
 import type { AskHandlerAnswer, AskHandlerQuestion, ToolSession } from ".";
-import type { AskToolDetails, QuestionResult } from "./ask";
-
-const OptionItem = Type.Object({
-	label: Type.String({ description: "Display label" }),
-});
-
-const QuestionItem = Type.Object({
-	id: Type.String({ description: "Question ID, e.g. 'auth', 'cache'" }),
-	question: Type.String({ description: "Question text" }),
-	options: Type.Array(OptionItem, { description: "Available options" }),
-	multi: Type.Optional(Type.Boolean({ description: "Allow multiple selections" })),
-	recommended: Type.Optional(Type.Number({ description: "Index of recommended option (0-indexed)" })),
-});
-
-const askSchema = Type.Object({
-	questions: Type.Array(QuestionItem, { description: "Questions to ask", minItems: 1 }),
-});
-
-type AskParams = Static<typeof askSchema>;
+import { askSchema, type AskToolDetails, type AskToolInput, type QuestionResult } from "./ask";
 
 export class AskProxyTool implements AgentTool<typeof askSchema, AskToolDetails> {
 	readonly name = "ask";
@@ -43,7 +26,7 @@ export class AskProxyTool implements AgentTool<typeof askSchema, AskToolDetails>
 
 	async execute(
 		_toolCallId: string,
-		params: AskParams,
+		params: AskToolInput,
 		signal?: AbortSignal,
 		_onUpdate?: AgentToolUpdateCallback<AskToolDetails>,
 	): Promise<AgentToolResult<AskToolDetails>> {
@@ -79,7 +62,7 @@ export class AskProxyTool implements AgentTool<typeof askSchema, AskToolDetails>
 
 		let answers: AskHandlerAnswer[];
 		try {
-			answers = await handler(questions);
+			answers = signal ? await untilAborted(signal, () => handler(questions)) : await handler(questions);
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
 			return {

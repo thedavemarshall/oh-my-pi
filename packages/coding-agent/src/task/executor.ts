@@ -24,7 +24,7 @@ import { createAgentSession, discoverAuthStorage } from "../sdk";
 import type { AgentSession, AgentSessionEvent } from "../session/agent-session";
 import type { AuthStorage } from "../session/auth-storage";
 import { SessionManager } from "../session/session-manager";
-import { type ContextFileEntry, truncateTail } from "../tools";
+import { type ContextFileEntry, type ToolSession, truncateTail } from "../tools";
 import { jtdToJsonSchema } from "../tools/jtd-to-json-schema";
 import { ToolAbortError } from "../tools/tool-errors";
 import type { EventBus } from "../utils/event-bus";
@@ -151,7 +151,7 @@ export interface ExecutorOptions {
 	searchDb?: SearchDb;
 	settings?: Settings;
 	/** Handler for proxying ask calls from subagent to parent UI */
-	askHandler?: import("../tools").ToolSession["askHandler"];
+	askHandler?: ToolSession["askHandler"];
 }
 
 function parseStringifiedJson(value: unknown): unknown {

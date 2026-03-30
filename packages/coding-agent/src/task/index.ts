@@ -15,13 +15,14 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import path from "node:path";
-import type { AgentTool, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
+import type { AgentToolContext, AgentTool, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { Usage } from "@oh-my-pi/pi-ai";
 import { $env, Snowflake } from "@oh-my-pi/pi-utils";
 import { $ } from "bun";
-import type { ToolSession } from "..";
+import type { AskHandlerAnswer, ToolSession } from "..";
 import { resolveAgentModelPatterns } from "../config/model-resolver";
 import { renderPromptTemplate } from "../config/prompt-templates";
+import type { ExtensionUIContext } from "../extensibility/extensions/types";
 import type { Theme } from "../modes/theme/theme";
 import planModeSubagentPrompt from "../prompts/system/plan-mode-subagent.md" with { type: "text" };
 import taskDescriptionTemplate from "../prompts/tools/task.md" with { type: "text" };
@@ -188,7 +189,7 @@ export class TaskTool implements AgentTool<TaskSchema, TaskToolDetails, Theme> {
 		params: TaskParams,
 		signal?: AbortSignal,
 		onUpdate?: AgentToolUpdateCallback<TaskToolDetails>,
-		context?: import("@oh-my-pi/pi-agent-core").AgentToolContext,
+		context?: AgentToolContext,
 	): Promise<AgentToolResult<TaskToolDetails>> {
 		const asyncEnabled = this.session.settings.get("async.enabled");
 		const selectedAgent = this.#discoveredAgents.find(agent => agent.name === params.agent);
@@ -429,30 +430,69 @@ export class TaskTool implements AgentTool<TaskSchema, TaskToolDetails, Theme> {
 		};
 	}
 
-	#buildAskHandler(
-		context?: import("@oh-my-pi/pi-agent-core").AgentToolContext,
-	): import("../tools").ToolSession["askHandler"] {
-		const ui = (context as { ui?: import("../extensibility/extensions/types").ExtensionUIContext } | undefined)?.ui;
-		const parentHasUI = (context as { hasUI?: boolean } | undefined)?.hasUI ?? false;
+	#buildAskHandler(context?: AgentToolContext): ToolSession["askHandler"] {
+		const ui = context?.ui;
 		const parentAskHandler = this.session.askHandler;
-		if (!ui && !parentHasUI && !parentAskHandler) return undefined;
+		if (!ui && !parentAskHandler) return undefined;
 
 		return async questions => {
 			// If parent has direct UI, use it
 			if (ui) {
-				const answers: import("../tools").AskHandlerAnswer[] = [];
+				const answers: AskHandlerAnswer[] = [];
 				for (const q of questions) {
 					const options = [...q.options];
-					if (q.recommended !== undefined && q.recommended < options.length) {
-						options[q.recommended] = `${options[q.recommended]} (Recommended)`;
-					}
-					const selected = await ui.select(`[Subtask] ${q.question}`, options);
-					if (selected === undefined) {
-						answers.push({ id: q.id, selectedOptions: [] });
+					if (q.multi) {
+						// Multi-select: checkbox-toggle loop
+						const { checkbox, status } = ui.theme;
+						const selected = new Set<string>();
+						let customInput: string | undefined;
+						while (true) {
+							const opts: string[] = options.map(
+								opt => `${selected.has(opt) ? checkbox.checked : checkbox.unchecked} ${opt}`,
+							);
+							if (selected.size > 0) {
+								opts.push(`${status.success} Done selecting`);
+							}
+							opts.push("Other (type your own)");
+							const prefix = selected.size > 0 ? `(${selected.size} selected) ` : "";
+							const choice = await ui.select(`[Subtask] ${prefix}${q.question}`, opts);
+							if (choice === undefined) break;
+							if (choice === `${status.success} Done selecting`) break;
+							if (choice === "Other (type your own)") {
+								customInput = await ui.editor("Enter your response:");
+								break;
+							}
+							// Toggle the selected option
+							const checkedPrefix = `${checkbox.checked} `;
+							const uncheckedPrefix = `${checkbox.unchecked} `;
+							let opt: string | undefined;
+							if (choice.startsWith(checkedPrefix)) {
+								opt = choice.slice(checkedPrefix.length);
+							} else if (choice.startsWith(uncheckedPrefix)) {
+								opt = choice.slice(uncheckedPrefix.length);
+							}
+							if (opt) {
+								if (selected.has(opt)) {
+									selected.delete(opt);
+								} else {
+									selected.add(opt);
+								}
+							}
+						}
+						answers.push({ id: q.id, selectedOptions: Array.from(selected), customInput });
 					} else {
-						// Strip " (Recommended)" suffix if present
-						const clean = selected.replace(/ \(Recommended\)$/, "");
-						answers.push({ id: q.id, selectedOptions: [clean] });
+						// Single-select
+						if (q.recommended !== undefined && q.recommended < options.length) {
+							options[q.recommended] = `${options[q.recommended]} (Recommended)`;
+						}
+						const selected = await ui.select(`[Subtask] ${q.question}`, options);
+						if (selected === undefined) {
+							answers.push({ id: q.id, selectedOptions: [] });
+						} else {
+							// Strip " (Recommended)" suffix if present
+							const clean = selected.replace(/ \(Recommended\)$/, "");
+							answers.push({ id: q.id, selectedOptions: [clean] });
+						}
 					}
 				}
 				return answers;
@@ -471,7 +511,7 @@ export class TaskTool implements AgentTool<TaskSchema, TaskToolDetails, Theme> {
 		signal?: AbortSignal,
 		onUpdate?: AgentToolUpdateCallback<TaskToolDetails>,
 		preAllocatedIds?: string[],
-		toolContext?: import("@oh-my-pi/pi-agent-core").AgentToolContext,
+		toolContext?: AgentToolContext,
 	): Promise<AgentToolResult<TaskToolDetails>> {
 		const startTime = Date.now();
 		const { agents, projectAgentsDir } = await discoverAgents(this.session.cwd);
