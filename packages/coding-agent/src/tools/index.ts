@@ -53,6 +53,7 @@ export * from "../session/streaming-output";
 export * from "../task";
 export * from "../web/search";
 export * from "./ask";
+export * from "./ask-proxy";
 export * from "./ast-edit";
 export * from "./ast-grep";
 export * from "./await-tool";
