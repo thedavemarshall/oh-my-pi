@@ -25,6 +25,7 @@ import { getMarkdownTheme, type Theme, theme } from "../modes/theme/theme";
 import askDescription from "../prompts/tools/ask.md" with { type: "text" };
 import { renderStatusLine } from "../tui";
 import type { ToolSession } from ".";
+import { AskProxyTool } from "./ask-proxy";
 import { formatErrorMessage, formatMeta, formatTitle } from "./render-utils";
 import { ToolAbortError } from "./tool-errors";
 
@@ -388,8 +389,10 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 		this.description = renderPromptTemplate(askDescription);
 	}
 
-	static createIf(session: ToolSession): AskTool | null {
-		return session.hasUI ? new AskTool(session) : null;
+	static createIf(session: ToolSession): AskTool | AskProxyTool | null {
+		if (session.hasUI) return new AskTool(session);
+		if (session.askHandler) return new AskProxyTool(session);
+		return null;
 	}
 
 	/** Send terminal notification when ask tool is waiting for input */

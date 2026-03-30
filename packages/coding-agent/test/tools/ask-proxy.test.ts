@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { AskTool } from "../../src/tools/ask";
 import type { AskHandlerAnswer, AskHandlerQuestion } from "../../src/tools";
 
 describe("AskProxyTool", () => {
@@ -96,5 +97,30 @@ describe("AskProxyTool", () => {
 		);
 
 		expect(result.content[0].text).toContain("Error");
+	});
+});
+
+describe("AskTool.createIf", () => {
+	it("returns AskTool when hasUI is true", () => {
+		const session = { hasUI: true, settings: { get: () => "" } } as any;
+		const tool = AskTool.createIf(session);
+		expect(tool).toBeInstanceOf(AskTool);
+	});
+
+	it("returns AskProxyTool when hasUI is false but askHandler exists", async () => {
+		const { AskProxyTool } = await import("../../src/tools/ask-proxy");
+		const session = {
+			hasUI: false,
+			askHandler: async () => [],
+			settings: { get: () => "" },
+		} as any;
+		const tool = AskTool.createIf(session);
+		expect(tool).toBeInstanceOf(AskProxyTool);
+	});
+
+	it("returns null when hasUI is false and no askHandler", () => {
+		const session = { hasUI: false, settings: { get: () => "" } } as any;
+		const tool = AskTool.createIf(session);
+		expect(tool).toBeNull();
 	});
 });
