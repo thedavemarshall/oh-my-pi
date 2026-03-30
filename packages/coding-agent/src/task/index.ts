@@ -188,11 +188,12 @@ export class TaskTool implements AgentTool<TaskSchema, TaskToolDetails, Theme> {
 		params: TaskParams,
 		signal?: AbortSignal,
 		onUpdate?: AgentToolUpdateCallback<TaskToolDetails>,
+		context?: import("@oh-my-pi/pi-agent-core").AgentToolContext,
 	): Promise<AgentToolResult<TaskToolDetails>> {
 		const asyncEnabled = this.session.settings.get("async.enabled");
 		const selectedAgent = this.#discoveredAgents.find(agent => agent.name === params.agent);
 		if (!asyncEnabled || selectedAgent?.blocking === true) {
-			return this.#executeSync(_toolCallId, params, signal, onUpdate);
+			return this.#executeSync(_toolCallId, params, signal, onUpdate, undefined, context);
 		}
 
 		const manager = this.session.asyncJobManager;
@@ -205,7 +206,7 @@ export class TaskTool implements AgentTool<TaskSchema, TaskToolDetails, Theme> {
 
 		const taskItems = params.tasks ?? [];
 		if (taskItems.length === 0) {
-			return this.#executeSync(_toolCallId, params, signal, onUpdate);
+			return this.#executeSync(_toolCallId, params, signal, onUpdate, undefined, context);
 		}
 
 		const outputManager =
@@ -303,7 +304,7 @@ export class TaskTool implements AgentTool<TaskSchema, TaskToolDetails, Theme> {
 						try {
 							const result = await this.#executeSync(_toolCallId, singleParams, runSignal, undefined, [
 								uniqueId,
-							]);
+							], context);
 							const finalText = result.content.find(part => part.type === "text")?.text ?? "(no output)";
 							const singleResult = result.details?.results[0];
 							if (progress) {
@@ -423,12 +424,49 @@ export class TaskTool implements AgentTool<TaskSchema, TaskToolDetails, Theme> {
 		};
 	}
 
+	#buildAskHandler(
+		context?: import("@oh-my-pi/pi-agent-core").AgentToolContext,
+	): import("../tools").ToolSession["askHandler"] {
+		const ui = (context as { ui?: import("../extensibility/extensions/types").ExtensionUIContext } | undefined)?.ui;
+		const parentHasUI = (context as { hasUI?: boolean } | undefined)?.hasUI ?? false;
+		const parentAskHandler = this.session.askHandler;
+		if (!ui && !parentHasUI && !parentAskHandler) return undefined;
+
+		return async (questions) => {
+			// If parent has direct UI, use it
+			if (ui) {
+				const answers: import("../tools").AskHandlerAnswer[] = [];
+				for (const q of questions) {
+					const options = [...q.options];
+					if (q.recommended !== undefined && q.recommended < options.length) {
+						options[q.recommended] = `${options[q.recommended]} (Recommended)`;
+					}
+					const selected = await ui.select(`[Subtask] ${q.question}`, options);
+					if (selected === undefined) {
+						answers.push({ id: q.id, selectedOptions: [] });
+					} else {
+						// Strip " (Recommended)" suffix if present
+						const clean = selected.replace(/ \(Recommended\)$/, "");
+						answers.push({ id: q.id, selectedOptions: [clean] });
+					}
+				}
+				return answers;
+			}
+			// If parent itself is a subtask with an askHandler, chain through
+			if (parentAskHandler) {
+				return parentAskHandler(questions);
+			}
+			throw new Error("No UI available for ask");
+		};
+	}
+
 	async #executeSync(
 		_toolCallId: string,
 		params: TaskParams,
 		signal?: AbortSignal,
 		onUpdate?: AgentToolUpdateCallback<TaskToolDetails>,
 		preAllocatedIds?: string[],
+		toolContext?: import("@oh-my-pi/pi-agent-core").AgentToolContext,
 	): Promise<AgentToolResult<TaskToolDetails>> {
 		const startTime = Date.now();
 		const { agents, projectAgentsDir } = await discoverAgents(this.session.cwd);
@@ -440,6 +478,7 @@ export class TaskTool implements AgentTool<TaskSchema, TaskToolDetails, Theme> {
 		const commitStyle = this.session.settings.get("task.isolation.commits");
 		const maxConcurrency = this.session.settings.get("task.maxConcurrency");
 		const taskDepth = this.session.taskDepth ?? 0;
+		const askHandler = this.#buildAskHandler(toolContext);
 
 		if (isolationMode === "none" && "isolated" in params) {
 			return {
@@ -781,6 +820,7 @@ export class TaskTool implements AgentTool<TaskSchema, TaskToolDetails, Theme> {
 						contextFiles,
 						skills: availableSkills,
 						promptTemplates,
+						askHandler,
 					});
 				}
 
@@ -835,6 +875,7 @@ export class TaskTool implements AgentTool<TaskSchema, TaskToolDetails, Theme> {
 						contextFiles,
 						skills: availableSkills,
 						promptTemplates,
+						askHandler,
 					});
 					if (mergeMode === "branch" && result.exitCode === 0) {
 						try {

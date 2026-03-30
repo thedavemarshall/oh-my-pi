@@ -1,6 +1,13 @@
 import { describe, expect, it } from "bun:test";
+import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { AskTool } from "../../src/tools/ask";
 import type { AskHandlerAnswer, AskHandlerQuestion } from "../../src/tools";
+
+function getText(result: AgentToolResult<any>): string {
+	const first = result.content[0];
+	if (first?.type !== "text") throw new Error("Expected text content");
+	return first.text;
+}
 
 describe("AskProxyTool", () => {
 	it("delegates single question to askHandler and formats response", async () => {
@@ -29,7 +36,7 @@ describe("AskProxyTool", () => {
 		expect(receivedQuestions).toHaveLength(1);
 		expect(receivedQuestions[0][0].question).toBe("Which auth method?");
 		expect(receivedQuestions[0][0].options).toEqual(["JWT", "OAuth2"]);
-		expect(result.content[0].text).toContain("User selected: JWT");
+		expect(getText(result)).toContain("User selected: JWT");
 	});
 
 	it("formats multi-question responses", async () => {
@@ -53,9 +60,9 @@ describe("AskProxyTool", () => {
 			],
 		});
 
-		expect(result.content[0].text).toContain("User answers:");
-		expect(result.content[0].text).toContain("First?");
-		expect(result.content[0].text).toContain("Second?");
+		expect(getText(result)).toContain("User answers:");
+		expect(getText(result)).toContain("First?");
+		expect(getText(result)).toContain("Second?");
 	});
 
 	it("handles custom input from handler", async () => {
@@ -73,7 +80,7 @@ describe("AskProxyTool", () => {
 			questions: [{ id: "q1", question: "What?", options: [{ label: "A" }] }],
 		});
 
-		expect(result.content[0].text).toContain("User provided custom input: my custom answer");
+		expect(getText(result)).toContain("User provided custom input: my custom answer");
 	});
 
 	it("returns error when aborted via signal", async () => {
@@ -96,7 +103,7 @@ describe("AskProxyTool", () => {
 			controller.signal,
 		);
 
-		expect(result.content[0].text).toContain("Error");
+		expect(getText(result)).toContain("Error");
 	});
 });
 

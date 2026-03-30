@@ -150,6 +150,8 @@ export interface ExecutorOptions {
 	modelRegistry?: ModelRegistry;
 	searchDb?: SearchDb;
 	settings?: Settings;
+	/** Handler for proxying ask calls from subagent to parent UI */
+	askHandler?: import("../tools").ToolSession["askHandler"];
 }
 
 function parseStringifiedJson(value: unknown): unknown {
@@ -979,6 +981,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				skipPythonPreflight,
 				enableMCP,
 				customTools: mcpProxyTools.length > 0 ? mcpProxyTools : undefined,
+				askHandler: options.askHandler,
 			});
 
 			activeSession = session;
