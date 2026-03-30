@@ -19,10 +19,9 @@ import type { AgentToolContext, AgentTool, AgentToolResult, AgentToolUpdateCallb
 import type { Usage } from "@oh-my-pi/pi-ai";
 import { $env, Snowflake } from "@oh-my-pi/pi-utils";
 import { $ } from "bun";
-import type { AskHandlerAnswer, ToolSession } from "..";
+import type { ToolSession } from "..";
 import { resolveAgentModelPatterns } from "../config/model-resolver";
 import { renderPromptTemplate } from "../config/prompt-templates";
-import type { ExtensionUIContext } from "../extensibility/extensions/types";
 import type { Theme } from "../modes/theme/theme";
 import planModeSubagentPrompt from "../prompts/system/plan-mode-subagent.md" with { type: "text" };
 import taskDescriptionTemplate from "../prompts/tools/task.md" with { type: "text" };
@@ -31,6 +30,7 @@ import { formatBytes, formatDuration } from "../tools/render-utils";
 // Import review tools for side effects (registers subagent tool handlers)
 import "../tools/review";
 import { generateCommitMessage } from "../utils/commit-message-generator";
+import { buildAskHandler } from "./ask-handler";
 import { discoverAgents, getAgent } from "./discovery";
 import { runSubprocess } from "./executor";
 import { resolveIsolationBackendForTaskExecution } from "./isolation-backend";
@@ -107,6 +107,7 @@ function addUsageTotals(target: Usage, usage: Partial<Usage>): void {
 
 // Re-export types and utilities
 export { loadBundledAgents as BUNDLED_AGENTS } from "./agents";
+export { buildAskHandler } from "./ask-handler";
 export { discoverCommands, expandCommand, getCommand } from "./commands";
 export { discoverAgents, getAgent } from "./discovery";
 export { AgentOutputManager } from "./output-manager";
@@ -430,79 +431,8 @@ export class TaskTool implements AgentTool<TaskSchema, TaskToolDetails, Theme> {
 		};
 	}
 
-	#buildAskHandler(context?: AgentToolContext): ToolSession["askHandler"] {
-		const ui = context?.ui;
-		const parentAskHandler = this.session.askHandler;
-		if (!ui && !parentAskHandler) return undefined;
-
-		return async questions => {
-			// If parent has direct UI, use it
-			if (ui) {
-				const answers: AskHandlerAnswer[] = [];
-				for (const q of questions) {
-					const options = [...q.options];
-					if (q.multi) {
-						// Multi-select: checkbox-toggle loop
-						const { checkbox, status } = ui.theme;
-						const selected = new Set<string>();
-						let customInput: string | undefined;
-						while (true) {
-							const opts: string[] = options.map(
-								opt => `${selected.has(opt) ? checkbox.checked : checkbox.unchecked} ${opt}`,
-							);
-							if (selected.size > 0) {
-								opts.push(`${status.success} Done selecting`);
-							}
-							opts.push("Other (type your own)");
-							const prefix = selected.size > 0 ? `(${selected.size} selected) ` : "";
-							const choice = await ui.select(`[Subtask] ${prefix}${q.question}`, opts);
-							if (choice === undefined) break;
-							if (choice === `${status.success} Done selecting`) break;
-							if (choice === "Other (type your own)") {
-								customInput = await ui.editor("Enter your response:");
-								break;
-							}
-							// Toggle the selected option
-							const checkedPrefix = `${checkbox.checked} `;
-							const uncheckedPrefix = `${checkbox.unchecked} `;
-							let opt: string | undefined;
-							if (choice.startsWith(checkedPrefix)) {
-								opt = choice.slice(checkedPrefix.length);
-							} else if (choice.startsWith(uncheckedPrefix)) {
-								opt = choice.slice(uncheckedPrefix.length);
-							}
-							if (opt) {
-								if (selected.has(opt)) {
-									selected.delete(opt);
-								} else {
-									selected.add(opt);
-								}
-							}
-						}
-						answers.push({ id: q.id, selectedOptions: Array.from(selected), customInput });
-					} else {
-						// Single-select
-						if (q.recommended !== undefined && q.recommended < options.length) {
-							options[q.recommended] = `${options[q.recommended]} (Recommended)`;
-						}
-						const selected = await ui.select(`[Subtask] ${q.question}`, options);
-						if (selected === undefined) {
-							answers.push({ id: q.id, selectedOptions: [] });
-						} else {
-							// Strip " (Recommended)" suffix if present
-							const clean = selected.replace(/ \(Recommended\)$/, "");
-							answers.push({ id: q.id, selectedOptions: [clean] });
-						}
-					}
-				}
-				return answers;
-			}
-			// If parent itself is a subtask with an askHandler, chain through
-			if (parentAskHandler) {
-				return parentAskHandler(questions);
-			}
-			throw new Error("No UI available for ask");
-		};
+	#buildAskHandler(context?: AgentToolContext, label?: string): ToolSession["askHandler"] {
+		return buildAskHandler(context?.ui, this.session.askHandler, label);
 	}
 
 	async #executeSync(
@@ -523,7 +453,7 @@ export class TaskTool implements AgentTool<TaskSchema, TaskToolDetails, Theme> {
 		const commitStyle = this.session.settings.get("task.isolation.commits");
 		const maxConcurrency = this.session.settings.get("task.maxConcurrency");
 		const taskDepth = this.session.taskDepth ?? 0;
-		const askHandler = this.#buildAskHandler(toolContext);
+		const askHandler = this.#buildAskHandler(toolContext, agentName);
 
 		if (isolationMode === "none" && "isolated" in params) {
 			return {

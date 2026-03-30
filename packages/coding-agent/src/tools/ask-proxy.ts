@@ -7,7 +7,6 @@
  */
 import type { AgentTool, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import { untilAborted } from "@oh-my-pi/pi-utils";
-import type { Static } from "@sinclair/typebox";
 import { renderPromptTemplate } from "../config/prompt-templates";
 import askDescription from "../prompts/tools/ask.md" with { type: "text" };
 import type { AskHandlerAnswer, AskHandlerQuestion, ToolSession } from ".";
@@ -31,6 +30,7 @@ export class AskProxyTool implements AgentTool<typeof askSchema, AskToolDetails>
 		_onUpdate?: AgentToolUpdateCallback<AskToolDetails>,
 	): Promise<AgentToolResult<AskToolDetails>> {
 		if (signal?.aborted) {
+			// Error responses intentionally omit details — all AskToolDetails fields are optional
 			return {
 				content: [{ type: "text" as const, text: "Error: Ask was cancelled" }],
 				details: {},
