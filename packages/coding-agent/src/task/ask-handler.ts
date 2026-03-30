@@ -20,17 +20,18 @@ export function buildAskHandler(
 		if (ui) {
 			const answers: AskHandlerAnswer[] = [];
 			for (const q of questions) {
-				const options = [...q.options];
+				const originalOptions = [...q.options];
+				const displayOptions = [...q.options];
+				if (q.recommended !== undefined && q.recommended < displayOptions.length) {
+					displayOptions[q.recommended] = `${displayOptions[q.recommended]} (Recommended)`;
+				}
 				if (q.multi) {
 					// Multi-select: checkbox-toggle loop
 					const { checkbox, status } = ui.theme;
-					if (q.recommended !== undefined && q.recommended < options.length) {
-						options[q.recommended] = `${options[q.recommended]} (Recommended)`;
-					}
 					const selected = new Set<string>();
 					let customInput: string | undefined;
 					while (true) {
-						const opts: string[] = options.map(
+						const opts: string[] = displayOptions.map(
 							opt => `${selected.has(opt) ? checkbox.checked : checkbox.unchecked} ${opt}`,
 						);
 						opts.push(`${status.success} Done selecting`);
@@ -60,28 +61,31 @@ export function buildAskHandler(
 							}
 						}
 					}
-					const cleanSelected = Array.from(selected).map(s => s.replace(/ \(Recommended\)$/, ""));
+					// Map display labels back to originals to avoid stripping user labels
+					const cleanSelected = Array.from(selected).map(s => {
+						const idx = displayOptions.indexOf(s);
+						return idx >= 0 ? originalOptions[idx] : s;
+					});
 					answers.push({ id: q.id, selectedOptions: cleanSelected, customInput });
 				} else {
 					// Single-select
-					if (q.recommended !== undefined && q.recommended < options.length) {
-						options[q.recommended] = `${options[q.recommended]} (Recommended)`;
-					}
-					const selected = await ui.select(`${tag} ${q.question}`, options);
+					const selected = await ui.select(`${tag} ${q.question}`, displayOptions);
 					if (selected === undefined) {
 						answers.push({ id: q.id, selectedOptions: [] });
 					} else {
-						// Strip " (Recommended)" suffix if present
-						const clean = selected.replace(/ \(Recommended\)$/, "");
+						// Map display label back to original to avoid stripping user labels
+						const idx = displayOptions.indexOf(selected);
+						const clean = idx >= 0 ? originalOptions[idx] : selected;
 						answers.push({ id: q.id, selectedOptions: [clean] });
 					}
 				}
 			}
 			return answers;
 		}
-		// If parent itself is a subtask with an askHandler, chain through
+		// If parent itself is a subtask with an askHandler, chain through with tag
 		if (parentAskHandler) {
-			return parentAskHandler(questions);
+			const taggedQuestions = questions.map(q => ({ ...q, question: `${tag} ${q.question}` }));
+			return parentAskHandler(taggedQuestions);
 		}
 		// Defensive: unreachable since handler is only created when ui or parentAskHandler is truthy
 		throw new Error("No UI available for ask");

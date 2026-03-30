@@ -58,8 +58,8 @@ describe("AskProxyTool", () => {
 		});
 
 		expect(getText(result)).toContain("User answers:");
-		expect(getText(result)).toContain("First?");
-		expect(getText(result)).toContain("Second?");
+		expect(getText(result)).toContain("q1: A");
+		expect(getText(result)).toContain("q2: X");
 	});
 
 	it("handles custom input from handler", async () => {
@@ -174,6 +174,51 @@ describe("AskProxyTool", () => {
 		});
 
 		expect(getText(result)).toContain("User selected: A, C");
+	});
+
+	it("matches answers by id, not index", async () => {
+		const mockSession = {
+			askHandler: async (): Promise<AskHandlerAnswer[]> => {
+				// Return answers in reverse order
+				return [
+					{ id: "q2", selectedOptions: ["Y"] },
+					{ id: "q1", selectedOptions: ["B"] },
+				];
+			},
+			settings: { get: () => "" },
+		} as any;
+
+		const tool = new AskProxyTool(mockSession);
+		const result = await tool.execute("call-id", {
+			questions: [
+				{ id: "q1", question: "First?", options: [{ label: "A" }, { label: "B" }] },
+				{ id: "q2", question: "Second?", options: [{ label: "X" }, { label: "Y" }] },
+			],
+		});
+
+		expect(getText(result)).toContain("q1: B");
+		expect(getText(result)).toContain("q2: Y");
+	});
+
+	it("falls back to empty answer when id is not found", async () => {
+		const mockSession = {
+			askHandler: async (): Promise<AskHandlerAnswer[]> => {
+				return [{ id: "q1", selectedOptions: ["A"] }];
+				// q2 answer is missing
+			},
+			settings: { get: () => "" },
+		} as any;
+
+		const tool = new AskProxyTool(mockSession);
+		const result = await tool.execute("call-missing", {
+			questions: [
+				{ id: "q1", question: "First?", options: [{ label: "A" }, { label: "B" }] },
+				{ id: "q2", question: "Second?", options: [{ label: "X" }, { label: "Y" }] },
+			],
+		});
+
+		expect(getText(result)).toContain("q1: A");
+		expect(getText(result)).toContain("q2: (cancelled)");
 	});
 });
 

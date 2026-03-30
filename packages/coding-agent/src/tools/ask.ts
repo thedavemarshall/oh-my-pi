@@ -354,7 +354,7 @@ async function askSingleQuestion(
 	return { selectedOptions, customInput, timedOut };
 }
 
-function formatQuestionResult(result: QuestionResult): string {
+export function formatQuestionResult(result: QuestionResult): string {
 	if (result.customInput !== undefined) {
 		return `${result.id}: "${result.customInput}"`;
 	}

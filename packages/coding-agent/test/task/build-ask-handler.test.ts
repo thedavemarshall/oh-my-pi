@@ -114,7 +114,9 @@ describe("buildAskHandler", () => {
 		const answers = await handler(questions);
 
 		expect(received).toHaveLength(1);
-		expect(received[0]).toBe(questions);
+		expect(received[0][0].question).toBe("[Subtask] Pick");
+		expect(received[0][0].id).toBe("q1");
+		expect(received[0][0].options).toEqual(["A", "B"]);
 		expect(answers[0].selectedOptions).toEqual(["A"]);
 	});
 
@@ -125,6 +127,35 @@ describe("buildAskHandler", () => {
 		await handler([{ id: "q1", question: "Pick one", options: ["A"], multi: false }]);
 
 		expect(selectCalls[0].title).toStartWith("[Subtask: review]");
+	});
+
+	it("multi-select toggle on then off results in empty selection", async () => {
+		const { ui } = mockUI({
+			// First call: toggle A on (unchecked -> checked)
+			// Second call: toggle A off (checked -> unchecked)
+			// Third call: done
+			selectResponses: ["[ ] A", "[x] A", "[ok] Done selecting"],
+		});
+		const handler = buildAskHandler(ui, undefined)!;
+
+		const answers = await handler([
+			{ id: "q1", question: "Pick items", options: ["A", "B"], multi: true },
+		]);
+
+		expect(answers[0].selectedOptions).toEqual([]);
+		expect(answers[0].customInput).toBeUndefined();
+	});
+
+	it("preserves option labels that naturally contain (Recommended)", async () => {
+		const { ui } = mockUI({ selectResponses: ["Use cache (Recommended)"] });
+		const handler = buildAskHandler(ui, undefined)!;
+
+		const answers = await handler([
+			{ id: "q1", question: "Strategy?", options: ["Use cache (Recommended)", "No cache"], multi: false },
+		]);
+
+		// The label should be preserved as-is since recommended index was not set
+		expect(answers[0].selectedOptions).toEqual(["Use cache (Recommended)"]);
 	});
 
 	it("defaults to [Subtask] prefix when no label provided", async () => {

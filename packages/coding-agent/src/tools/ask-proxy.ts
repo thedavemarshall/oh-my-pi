@@ -5,12 +5,12 @@
  * this tool is registered instead of the full AskTool. It has the same schema
  * but delegates question display and input collection to the parent session.
  */
-import type { AgentTool, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
+import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import { untilAborted } from "@oh-my-pi/pi-utils";
 import { renderPromptTemplate } from "../config/prompt-templates";
 import askDescription from "../prompts/tools/ask.md" with { type: "text" };
 import type { AskHandlerAnswer, AskHandlerQuestion, ToolSession } from ".";
-import { askSchema, type AskToolDetails, type AskToolInput, type QuestionResult } from "./ask";
+import { askSchema, type AskToolDetails, type AskToolInput, type QuestionResult, formatQuestionResult } from "./ask";
 
 export class AskProxyTool implements AgentTool<typeof askSchema, AskToolDetails> {
 	readonly name = "ask";
@@ -28,6 +28,7 @@ export class AskProxyTool implements AgentTool<typeof askSchema, AskToolDetails>
 		params: AskToolInput,
 		signal?: AbortSignal,
 		_onUpdate?: AgentToolUpdateCallback<AskToolDetails>,
+		_context?: AgentToolContext,
 	): Promise<AgentToolResult<AskToolDetails>> {
 		if (signal?.aborted) {
 			// Error responses intentionally omit details — all AskToolDetails fields are optional
@@ -73,7 +74,7 @@ export class AskProxyTool implements AgentTool<typeof askSchema, AskToolDetails>
 
 		if (params.questions.length === 1) {
 			const q = params.questions[0];
-			const answer = answers[0];
+			const answer = answers.find(a => a.id === q.id) ?? answers[0];
 			const optionLabels = q.options.map(o => o.label);
 			const selectedOptions = answer?.selectedOptions ?? [];
 			const customInput = answer?.customInput;
@@ -94,8 +95,9 @@ export class AskProxyTool implements AgentTool<typeof askSchema, AskToolDetails>
 			};
 		}
 
-		const results: QuestionResult[] = params.questions.map((q, i) => {
-			const answer = answers[i];
+		const answerMap = new Map(answers.map(a => [a.id, a]));
+		const results: QuestionResult[] = params.questions.map(q => {
+			const answer = answerMap.get(q.id);
 			return {
 				id: q.id,
 				question: q.question,
@@ -130,18 +132,4 @@ function formatSingleAnswer(selectedOptions: string[], customInput: string | und
 		);
 	}
 	return parts.length > 0 ? parts.join("\n") : "User cancelled the selection";
-}
-
-function formatQuestionResult(result: QuestionResult): string {
-	const parts: string[] = [`- ${result.question}`];
-	if (result.selectedOptions.length > 0) {
-		parts.push(`  Selected: ${result.selectedOptions.join(", ")}`);
-	}
-	if (result.customInput !== undefined) {
-		parts.push(`  Custom: ${result.customInput}`);
-	}
-	if (result.selectedOptions.length === 0 && result.customInput === undefined) {
-		parts.push("  (no selection)");
-	}
-	return parts.join("\n");
 }
