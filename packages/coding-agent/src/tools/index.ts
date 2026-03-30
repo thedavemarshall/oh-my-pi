@@ -80,6 +80,22 @@ export * from "./submit-result";
 export * from "./todo-write";
 export * from "./write";
 
+/** Question passed to askHandler callback */
+export interface AskHandlerQuestion {
+	id: string;
+	question: string;
+	options: string[];
+	multi: boolean;
+	recommended?: number;
+}
+
+/** Answer returned from askHandler callback */
+export interface AskHandlerAnswer {
+	id: string;
+	selectedOptions: string[];
+	customInput?: string;
+}
+
 /** Tool type (AgentTool from pi-ai) */
 export type Tool = AgentTool<any, any, any>;
 
@@ -167,6 +183,8 @@ export interface ToolSession {
 	activateDiscoveredMCPTools?: (toolNames: string[]) => Promise<string[]>;
 	/** Pending action store for preview/apply workflows */
 	pendingActionStore?: import("./pending-action").PendingActionStore;
+	/** Handler for proxying ask requests from headless subtasks to the parent UI. */
+	askHandler?: (questions: AskHandlerQuestion[]) => Promise<AskHandlerAnswer[]>;
 	/** Get active checkpoint state if any. */
 	getCheckpointState?: () => CheckpointState | undefined;
 	/** Set or clear active checkpoint state. */

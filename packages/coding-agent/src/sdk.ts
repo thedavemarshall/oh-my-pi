@@ -215,6 +215,9 @@ export interface CreateAgentSessionOptions {
 
 	/** Whether UI is available (enables interactive tools like ask). Default: false */
 	hasUI?: boolean;
+
+	/** Handler for proxying ask requests from headless subtasks to parent UI */
+	askHandler?: ToolSession["askHandler"];
 }
 
 /** Result from createAgentSession */
@@ -925,6 +928,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		asyncJobManager,
 		pendingActionStore,
 		searchDb,
+		askHandler: options.askHandler,
 	};
 
 	// Initialize internal URL router for internal protocols (agent://, artifact://, memory://, skill://, rule://, mcp://, local://)
