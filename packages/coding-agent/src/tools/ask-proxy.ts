@@ -104,7 +104,9 @@ export class AskProxyTool implements AgentTool<typeof askSchema, AskToolDetails>
 			};
 
 			return {
-				content: [{ type: "text" as const, text: formatSingleAnswer(selectedOptions, customInput, q.multi ?? false) }],
+				content: [
+					{ type: "text" as const, text: formatSingleAnswer(selectedOptions, customInput, q.multi ?? false) },
+				],
 				details,
 			};
 		}

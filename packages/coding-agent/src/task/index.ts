@@ -302,9 +302,14 @@ export class TaskTool implements AgentTool<TaskSchema, TaskToolDetails, Theme> {
 							buildAsyncDetails("running", startedJobs[0]?.jobId ?? label) as unknown as Record<string, unknown>,
 						);
 						try {
-							const result = await this.#executeSync(_toolCallId, singleParams, runSignal, undefined, [
-								uniqueId,
-							], context);
+							const result = await this.#executeSync(
+								_toolCallId,
+								singleParams,
+								runSignal,
+								undefined,
+								[uniqueId],
+								context,
+							);
 							const finalText = result.content.find(part => part.type === "text")?.text ?? "(no output)";
 							const singleResult = result.details?.results[0];
 							if (progress) {
@@ -432,7 +437,7 @@ export class TaskTool implements AgentTool<TaskSchema, TaskToolDetails, Theme> {
 		const parentAskHandler = this.session.askHandler;
 		if (!ui && !parentHasUI && !parentAskHandler) return undefined;
 
-		return async (questions) => {
+		return async questions => {
 			// If parent has direct UI, use it
 			if (ui) {
 				const answers: import("../tools").AskHandlerAnswer[] = [];
