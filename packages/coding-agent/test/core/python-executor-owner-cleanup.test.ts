@@ -6,7 +6,6 @@ import {
 	resetPreludeDocsCache,
 	warmPythonEnvironment,
 } from "@oh-my-pi/pi-coding-agent/ipy/executor";
-import * as gatewayCoordinator from "@oh-my-pi/pi-coding-agent/ipy/gateway-coordinator";
 import type {
 	KernelExecuteResult,
 	KernelShutdownResult,
@@ -15,6 +14,7 @@ import type {
 } from "@oh-my-pi/pi-coding-agent/ipy/kernel";
 import * as pythonKernel from "@oh-my-pi/pi-coding-agent/ipy/kernel";
 import { PythonKernel } from "@oh-my-pi/pi-coding-agent/ipy/kernel";
+import * as gatewayCoordinator from "@oh-my-pi/pi-coding-agent/kernel/gateway-coordinator";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
 const OK_RESULT: KernelExecuteResult = {

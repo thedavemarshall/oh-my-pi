@@ -1,7 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { getAgentModulesDir, getProjectDir, getProjectModulesDir } from "@oh-my-pi/pi-utils";
-import { getExecutionCancellationError } from "./cancellation";
+import { getExecutionCancellationError } from "../kernel/cancellation";
 
 export type PythonModuleSource = "user" | "project";
 

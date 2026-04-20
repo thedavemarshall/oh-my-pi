@@ -1,8 +1,11 @@
 /**
- * Python runtime resolution utilities.
+ * Python runtime resolution for the Jupyter gateway host.
  *
- * Centralizes environment filtering, venv detection, and Python executable resolution
- * for both the shared gateway and local kernel spawning.
+ * Resolves the Python executable (venv-aware, env-filtered) used to spawn
+ * the shared jupyter-kernel-gateway subprocess. The gateway is a Python
+ * program and remains a Python dependency even when serving non-Python
+ * kernels. This file is infrastructure resolution — not per-user kernel
+ * language logic.
  */
 import * as fs from "node:fs";
 import * as path from "node:path";

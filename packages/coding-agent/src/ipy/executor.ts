@@ -1,17 +1,20 @@
+/**
+ * Python-specific executor. Adapts PythonKernel (which composes JupyterKernel
+ * from kernel/) to the tools/python.ts API surface. Handles session vs per-call
+ * modes, warmup, prelude-docs introspection caching, output sanitization, and
+ * idle/owner cleanup.
+ *
+ * Not exported from the SDK — consumers go through tools/python.ts or (in PR 2)
+ * the kernel/* SDK surface.
+ */
 import * as path from "node:path";
 import { getAgentDir, getProjectDir, isBunTestRuntime, isEnoent, logger } from "@oh-my-pi/pi-utils";
+import { shutdownSharedGateway } from "../kernel/gateway-coordinator";
+import type { KernelDisplayOutput, KernelExecuteOptions, KernelExecuteResult } from "../kernel/jupyter-kernel";
 import { OutputSink } from "../session/streaming-output";
-import { shutdownSharedGateway } from "./gateway-coordinator";
-import {
-	checkPythonKernelAvailability,
-	type KernelDisplayOutput,
-	type KernelExecuteOptions,
-	type KernelExecuteResult,
-	type PreludeHelper,
-	PythonKernel,
-} from "./kernel";
 import { discoverPythonModules } from "./modules";
 import { PYTHON_PRELUDE } from "./prelude";
+import { checkPythonKernelAvailability, type PreludeHelper, PythonKernel } from "./python-kernel";
 
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const MAX_KERNEL_SESSIONS = 4;

@@ -322,6 +322,14 @@
 			"types": "./src/ipy/*.ts",
 			"import": "./src/ipy/*.ts"
 		},
+		"./kernel": {
+			"types": "./src/kernel/index.ts",
+			"import": "./src/kernel/index.ts"
+		},
+		"./kernel/*": {
+			"types": "./src/kernel/*.ts",
+			"import": "./src/kernel/*.ts"
+		},
 		"./lsp": {
 			"types": "./src/lsp/index.ts",
 			"import": "./src/lsp/index.ts"
