@@ -7,6 +7,7 @@
 import { isRecord, tryParseJson } from "@oh-my-pi/pi-utils";
 import { htmlToBasicMarkdown } from "../web/scrapers/types";
 import type { KernelDisplayOutput, PythonStatusEvent } from "./jupyter-kernel";
+import { OMP_STATUS_MIME } from "./prelude-protocol";
 
 /**
  * Parse an application/x-omp-status payload that may arrive either as a raw
@@ -14,6 +15,10 @@ import type { KernelDisplayOutput, PythonStatusEvent } from "./jupyter-kernel";
  * other language's display API serialises the bundle value). Returns null
  * when the payload is unparseable or missing both discriminator fields —
  * the dispatcher should skip rather than throw.
+ *
+ * Distinct from prelude-protocol.ts's parseStatusEvent: that one is strict
+ * (throws on missing kind) and plugin-facing; this one is lenient so the
+ * display pipeline never raises on bad plugin input.
  */
 function parseStatusPayload(raw: unknown): PythonStatusEvent | null {
 	const obj = typeof raw === "string" ? tryParseJson(raw) : raw;
@@ -22,12 +27,20 @@ function parseStatusPayload(raw: unknown): PythonStatusEvent | null {
 	return obj as PythonStatusEvent;
 }
 
+/**
+ * Per-kernel plugin handler for an arbitrary MIME type. Return a
+ * `KernelDisplayOutput` to transform the bundle, or `null` to fall through
+ * to the default renderer.
+ */
+export type MimeHandler = (data: unknown, metadata?: Record<string, unknown>) => KernelDisplayOutput | null;
+
+export interface RenderDisplayOptions {
+	handlers?: ReadonlyMap<string, MimeHandler>;
+}
+
 function normalizeDisplayText(text: string): string {
 	return text.endsWith("\n") ? text : `${text}\n`;
 }
-
-/** Reserved options bag for renderKernelDisplay; held for forward compatibility. */
-export interface RenderDisplayOptions {}
 
 /**
  * Renders a Jupyter display_data message into text and structured outputs.
@@ -59,19 +72,34 @@ export function renderKernelDisplay(
 	text: string;
 	outputs: KernelDisplayOutput[];
 } {
-	void options;
 	const data = content.data as Record<string, unknown> | undefined;
 	if (!data) return { text: "", outputs: [] };
 
 	const outputs: KernelDisplayOutput[] = [];
 
-	if (data["application/x-omp-status"] !== undefined) {
-		const event = parseStatusPayload(data["application/x-omp-status"]);
+	if (data[OMP_STATUS_MIME] !== undefined) {
+		const event = parseStatusPayload(data[OMP_STATUS_MIME]);
 		if (event) {
 			outputs.push({ type: "status", event });
 		}
-		// Status events don't produce text output
 		return { text: "", outputs };
+	}
+
+	// Plugin handlers take precedence over default MIME dispatch; fall through when all return null.
+	if (options?.handlers && options.handlers.size > 0) {
+		const metadata = content.metadata as Record<string, unknown> | undefined;
+		let handled = false;
+		for (const [mime, handler] of options.handlers) {
+			if (!(mime in data)) continue;
+			const result = handler(data[mime], metadata);
+			if (result) {
+				outputs.push(result);
+				handled = true;
+			}
+		}
+		if (handled) {
+			return { text: "", outputs };
+		}
 	}
 
 	if (typeof data["image/png"] === "string") {

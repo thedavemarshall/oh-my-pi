@@ -5,7 +5,7 @@
 
 import { $env, $flag, logger, Snowflake } from "@oh-my-pi/pi-utils";
 import { getAbortReason } from "./cancellation";
-import { renderKernelDisplay } from "./display";
+import { type MimeHandler, renderKernelDisplay } from "./display";
 import { classifyKernelError, type KernelError } from "./error";
 import { acquireSharedGateway, releaseSharedGateway, shutdownSharedGateway } from "./gateway-coordinator";
 import {
@@ -102,13 +102,38 @@ interface JupyterKernelStartOptions extends KernelLifecycleOptions {
 	useSharedGateway?: boolean;
 }
 
-export { renderKernelDisplay } from "./display";
+export { type MimeHandler, renderKernelDisplay } from "./display";
 export {
 	deserializeWebSocketMessage,
 	type JupyterHeader,
 	type JupyterMessage,
 	serializeWebSocketMessage,
 } from "./wire-protocol";
+
+/**
+ * Public factory for creating a kernel for a given kernelspec. Plugins call
+ * this from out-of-repo packages to build kernels for Ruby (iruby),
+ * TypeScript (tslab), SQL, Rails console, etc. Under the hood it acquires
+ * the shared gateway and starts a kernel via JupyterKernel.start.
+ */
+export interface CreateKernelOptions extends KernelLifecycleOptions {
+	/** Kernelspec name (e.g. "python3", "ruby", "tslab"). */
+	kernelspec: string;
+	/** Optional language-specific code to run at startup. */
+	prelude?: string;
+	/** Working directory for kernel session; defaults to process.cwd(). */
+	cwd?: string;
+}
+
+export function createJupyterKernel(options: CreateKernelOptions): Promise<JupyterKernel> {
+	return JupyterKernel.start({
+		kernelspec: options.kernelspec,
+		prelude: options.prelude,
+		cwd: options.cwd ?? process.cwd(),
+		signal: options.signal,
+		deadlineMs: options.deadlineMs,
+	});
+}
 
 export class JupyterKernel {
 	readonly #authToken?: string;
@@ -123,6 +148,7 @@ export class JupyterKernel {
 	#messageHandlers = new Map<string, (msg: JupyterMessage) => void>();
 	#channelHandlers = new Map<string, Set<(msg: JupyterMessage) => void>>();
 	#pendingExecutions = new Map<string, (reason: string) => void>();
+	#mimeHandlers = new Map<string, MimeHandler>();
 
 	private constructor(
 		readonly id: string,
@@ -154,6 +180,22 @@ export class JupyterKernel {
 			msg_type: msgType,
 			version: "5.5",
 		};
+	}
+
+	/**
+	 * Register a handler for a custom MIME type emitted by the kernel (e.g.,
+	 * plugin-specific display_data bundles). The handler transforms the raw
+	 * bundle into a `KernelDisplayOutput` that `renderKernelDisplay` already
+	 * knows how to surface. Return `null` to pass through to default rendering.
+	 *
+	 * Per-kernel-instance scoping — two plugins can't clobber each other.
+	 */
+	registerMimeHandler(mimeType: string, handler: MimeHandler): void {
+		this.#mimeHandlers.set(mimeType, handler);
+	}
+
+	get mimeHandlers(): ReadonlyMap<string, MimeHandler> {
+		return this.#mimeHandlers;
 	}
 
 	static async start(options: JupyterKernelStartOptions): Promise<JupyterKernel> {
@@ -613,7 +655,9 @@ export class JupyterKernel {
 				}
 				case "execute_result":
 				case "display_data": {
-					const { text, outputs } = renderKernelDisplay(response.content);
+					const { text, outputs } = renderKernelDisplay(response.content, {
+						handlers: this.#mimeHandlers,
+					});
 					if (text && options?.onChunk) {
 						await options.onChunk(text);
 					}

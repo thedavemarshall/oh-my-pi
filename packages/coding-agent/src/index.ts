@@ -30,6 +30,9 @@ export * from "./extensibility/extensions";
 export * from "./extensibility/skills";
 // Slash commands
 export { type FileSlashCommand, loadSlashCommands as discoverSlashCommands } from "./extensibility/slash-commands";
+// Kernel SDK — public surface for out-of-repo plugins that build kernels
+// for Ruby (iruby), TypeScript (tslab), SQL, etc.
+export * from "./kernel";
 export type * from "./lsp";
 // Main entry point
 export * from "./main";
