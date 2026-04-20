@@ -1,34 +1,74 @@
 /**
  * renderKernelDisplay — normalize a Jupyter display bundle into a form the
  * TUI can render. Handles MIME priority (text/html > image/png > text/plain),
- * truncation, and max-size clamping.
- *
- * Language-agnostic. Consumed by tools/python.ts today; exported as SDK in PR 2
- * for plugin authors to reuse.
+ * truncation, and max-size clamping. Language-agnostic.
  */
 
+import { isRecord, tryParseJson } from "@oh-my-pi/pi-utils";
 import { htmlToBasicMarkdown } from "../web/scrapers/types";
 import type { KernelDisplayOutput, PythonStatusEvent } from "./jupyter-kernel";
+
+/**
+ * Parse an application/x-omp-status payload that may arrive either as a raw
+ * object (Python's IPython display with raw=true) or as a JSON string (every
+ * other language's display API serialises the bundle value). Returns null
+ * when the payload is unparseable or missing both discriminator fields —
+ * the dispatcher should skip rather than throw.
+ */
+function parseStatusPayload(raw: unknown): PythonStatusEvent | null {
+	const obj = typeof raw === "string" ? tryParseJson(raw) : raw;
+	if (!isRecord(obj)) return null;
+	if (!("op" in obj) && !("kind" in obj)) return null;
+	return obj as PythonStatusEvent;
+}
 
 function normalizeDisplayText(text: string): string {
 	return text.endsWith("\n") ? text : `${text}\n`;
 }
 
-/** Renders a Jupyter display_data message into text and structured outputs. */
-export function renderKernelDisplay(content: Record<string, unknown>): {
+/** Reserved options bag for renderKernelDisplay; held for forward compatibility. */
+export interface RenderDisplayOptions {}
+
+/**
+ * Renders a Jupyter display_data message into text and structured outputs.
+ *
+ * The x-omp-status short-circuit surfaces progress/phase/heartbeat events from
+ * prelude helpers. Verified per-language emit incantations (from live kernel
+ * validation against python3, iruby 0.8.2, and tslab):
+ *
+ *   Python (IPython):
+ *     display({"application/x-omp-status": {"kind": "ping"}}, raw=True)
+ *
+ *   Ruby (iruby):
+ *     IRuby::Kernel.instance.session.send(
+ *       :publish, :display_data,
+ *       data: { "application/x-omp-status" => payload.to_json },
+ *       metadata: {},
+ *     )
+ *     # NOTE: IRuby.display(hash) renders the hash through inspect formatters
+ *     # even with raw: true — only session.publish ships a literal bundle.
+ *
+ *   TypeScript (tslab):
+ *     import { display } from "tslab";
+ *     display.raw("application/x-omp-status", JSON.stringify({ kind: "ping" }));
+ */
+export function renderKernelDisplay(
+	content: Record<string, unknown>,
+	options?: RenderDisplayOptions,
+): {
 	text: string;
 	outputs: KernelDisplayOutput[];
 } {
+	void options;
 	const data = content.data as Record<string, unknown> | undefined;
 	if (!data) return { text: "", outputs: [] };
 
 	const outputs: KernelDisplayOutput[] = [];
 
-	// Handle status events (custom MIME type from prelude helpers)
 	if (data["application/x-omp-status"] !== undefined) {
-		const statusData = data["application/x-omp-status"];
-		if (statusData && typeof statusData === "object" && "op" in statusData) {
-			outputs.push({ type: "status", event: statusData as PythonStatusEvent });
+		const event = parseStatusPayload(data["application/x-omp-status"]);
+		if (event) {
+			outputs.push({ type: "status", event });
 		}
 		// Status events don't produce text output
 		return { text: "", outputs };

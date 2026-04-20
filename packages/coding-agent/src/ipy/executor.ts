@@ -2,10 +2,8 @@
  * Python-specific executor. Adapts PythonKernel (which composes JupyterKernel
  * from kernel/) to the tools/python.ts API surface. Handles session vs per-call
  * modes, warmup, prelude-docs introspection caching, output sanitization, and
- * idle/owner cleanup.
- *
- * Not exported from the SDK — consumers go through tools/python.ts or (in PR 2)
- * the kernel/* SDK surface.
+ * idle/owner cleanup. Not exported from the SDK; consumers go through
+ * tools/python.ts.
  */
 import * as path from "node:path";
 import { getAgentDir, getProjectDir, isBunTestRuntime, isEnoent, logger } from "@oh-my-pi/pi-utils";

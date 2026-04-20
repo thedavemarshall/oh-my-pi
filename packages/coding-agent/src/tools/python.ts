@@ -578,7 +578,8 @@ function formatStatusEvent(event: PythonStatusEvent, theme: Theme): string {
 		batch: "icon.package",
 	};
 
-	const iconKey = opIcons[op] ?? "icon.file";
+	const opLabel = op ?? "status";
+	const iconKey = (op && opIcons[op]) || "icon.file";
 	const icon = theme.styledSymbol(iconKey, "muted");
 
 	// Format the status message based on operation type
@@ -586,7 +587,7 @@ function formatStatusEvent(event: PythonStatusEvent, theme: Theme): string {
 
 	// Error handling
 	if (data.error) {
-		return `${icon} ${theme.fg("warning", op)}: ${theme.fg("dim", String(data.error))}`;
+		return `${icon} ${theme.fg("warning", opLabel)}: ${theme.fg("dim", String(data.error))}`;
 	}
 
 	// Build description based on common fields
@@ -712,7 +713,7 @@ function formatStatusEvent(event: PythonStatusEvent, theme: Theme): string {
 	}
 
 	const desc = parts.length > 0 ? parts.join(" · ") : "";
-	return `${icon} ${theme.fg("muted", op)}${desc ? ` ${theme.fg("dim", desc)}` : ""}`;
+	return `${icon} ${theme.fg("muted", opLabel)}${desc ? ` ${theme.fg("dim", desc)}` : ""}`;
 }
 
 /** Format status event with expanded detail lines. */

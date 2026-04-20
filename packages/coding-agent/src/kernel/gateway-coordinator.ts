@@ -10,46 +10,15 @@ import { getOrCreateSnapshot } from "../utils/shell-snapshot";
 
 let legacyGatewayDirChecked = false;
 
-async function ensureLegacyGatewayDirMigrated(agentDir: string): Promise<void> {
-	if (legacyGatewayDirChecked) return;
-	// Set flag before await: concurrent callers may proceed before migration completes.
-	// Safe because withGatewayLock guards the new kernel-gateway/ dir, not the legacy one being torn down.
-	legacyGatewayDirChecked = true;
-	await migrateLegacyGatewayDir(agentDir);
-}
-
 /**
- * One-time migration: if the old `python-gateway/` state dir exists from a
- * previous version, shut down any referenced gateway process and remove the
- * directory. Exported for direct testing — production callers should use
- * `ensureLegacyGatewayDirMigrated` to avoid repeated stat() on hot paths.
+ * Best-effort cleanup of the pre-refactor `python-gateway/` state dir. Any
+ * orphaned gateway process keeps running until the user kills it or reboots —
+ * we don't try to terminate someone else's long-lived process from here.
  */
-export async function migrateLegacyGatewayDir(agentDir: string): Promise<void> {
-	const legacyDir = path.join(agentDir, "python-gateway");
-	try {
-		const stat = await fsPromises.stat(legacyDir);
-		if (!stat.isDirectory()) return;
-	} catch (err) {
-		if (isEnoent(err)) return;
-		throw err;
-	}
-	// Best-effort: read legacy lockfile, kill process if still alive.
-	try {
-		const lockPath = path.join(legacyDir, "gateway.lock");
-		const raw = await fsPromises.readFile(lockPath, "utf8");
-		const { pid } = JSON.parse(raw) as { pid?: number };
-		if (typeof pid === "number") {
-			try {
-				process.kill(pid, "SIGTERM");
-			} catch {
-				/* already gone */
-			}
-		}
-	} catch {
-		/* no lockfile or unparseable — fine */
-	}
-	await fsPromises.rm(legacyDir, { recursive: true, force: true });
-	logger.debug(`Migrated legacy gateway state dir: ${legacyDir}`);
+async function cleanupLegacyGatewayDir(agentDir: string): Promise<void> {
+	if (legacyGatewayDirChecked) return;
+	legacyGatewayDirChecked = true;
+	await fsPromises.rm(path.join(agentDir, "python-gateway"), { recursive: true, force: true }).catch(() => undefined);
 }
 
 const GATEWAY_DIR_NAME = "kernel-gateway";
@@ -357,7 +326,7 @@ async function killGateway(pid: number, context: string): Promise<void> {
 
 export async function acquireSharedGateway(cwd: string): Promise<AcquireResult | null> {
 	try {
-		await ensureLegacyGatewayDirMigrated(getAgentDir());
+		await cleanupLegacyGatewayDir(getAgentDir());
 		return await withGatewayLock(async () => {
 			const existingInfo = await logger.time("acquireSharedGateway:readInfo", readGatewayInfo);
 			if (existingInfo) {

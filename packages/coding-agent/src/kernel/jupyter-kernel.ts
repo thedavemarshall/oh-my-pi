@@ -4,13 +4,27 @@
  */
 
 import { $env, $flag, logger, Snowflake } from "@oh-my-pi/pi-utils";
-import { createCancellationError, getAbortReason, getExecutionCancellationError } from "./cancellation";
+import { getAbortReason } from "./cancellation";
 import { renderKernelDisplay } from "./display";
 import { classifyKernelError, type KernelError } from "./error";
 import { acquireSharedGateway, releaseSharedGateway, shutdownSharedGateway } from "./gateway-coordinator";
+import {
+	combineAbortSignal,
+	getStartupCleanupTimeoutMs,
+	getStartupExecuteOptions,
+	type KernelLifecycleOptions,
+	type KernelShutdownOptions,
+	type KernelShutdownResult,
+	throwIfAborted,
+	throwIfStartupExecutionFailed,
+} from "./kernel-lifecycle";
+import {
+	deserializeWebSocketMessage,
+	type JupyterHeader,
+	type JupyterMessage,
+	serializeWebSocketMessage,
+} from "./wire-protocol";
 
-const TEXT_ENCODER = new TextEncoder();
-const TEXT_DECODER = new TextDecoder();
 const TRACE_IPC = $flag("PI_PYTHON_IPC_TRACE");
 
 class SharedGatewayCreateError extends Error {
@@ -36,123 +50,23 @@ export function getExternalGatewayConfig(): ExternalGatewayConfig | null {
 	};
 }
 
-const STARTUP_CLEANUP_TIMEOUT_MS = 2_000;
 const WEBSOCKET_CONNECT_TIMEOUT_MS = 10_000;
 
-export interface KernelLifecycleOptions {
-	signal?: AbortSignal;
-	deadlineMs?: number;
-}
+// Re-export lifecycle types for callers that import from this module.
+export type { KernelLifecycleOptions, KernelShutdownOptions, KernelShutdownResult } from "./kernel-lifecycle";
+export { getStartupCleanupTimeoutMs } from "./kernel-lifecycle";
 
-export interface KernelShutdownOptions {
-	signal?: AbortSignal;
-	timeoutMs?: number;
-}
-
-export interface KernelShutdownResult {
-	confirmed: boolean;
-}
-
-export function getRemainingTimeMs(deadlineMs?: number): number | undefined {
-	if (deadlineMs === undefined) return undefined;
-	return Math.max(0, deadlineMs - Date.now());
-}
-
-export function throwIfStartupExecutionFailed(
-	result: Pick<KernelExecuteResult, "cancelled" | "status" | "timedOut">,
-	signal: AbortSignal | undefined,
-	failureMessage: string,
-): void {
-	if (result.cancelled) {
-		throw getExecutionCancellationError(result, signal, failureMessage);
-	}
-	if (result.status === "error") {
-		throw new Error(failureMessage);
-	}
-}
-
-export function createAbortedSignal(reason: Error): AbortSignal {
-	const controller = new AbortController();
-	controller.abort(reason);
-	return controller.signal;
-}
-
-export function combineAbortSignal(
-	options: KernelLifecycleOptions,
-	timeoutCapMs?: number,
-	fallbackReason = "Operation aborted",
-): AbortSignal | undefined {
-	if (options.signal?.aborted) {
-		return options.signal;
-	}
-
-	const signals: AbortSignal[] = [];
-	if (options.signal) {
-		signals.push(options.signal);
-	}
-
-	const remainingMs = getRemainingTimeMs(options.deadlineMs);
-	const timeoutMs =
-		remainingMs === undefined
-			? timeoutCapMs
-			: timeoutCapMs === undefined
-				? remainingMs
-				: Math.min(remainingMs, timeoutCapMs);
-
-	if (timeoutMs !== undefined) {
-		if (timeoutMs <= 0) {
-			return createAbortedSignal(createCancellationError("TimeoutError", fallbackReason));
-		}
-		signals.push(AbortSignal.timeout(timeoutMs));
-	}
-
-	if (signals.length === 0) return undefined;
-	return signals.length === 1 ? signals[0] : AbortSignal.any(signals);
-}
-
-export function throwIfAborted(signal: AbortSignal | undefined, fallbackReason: string): void {
-	if (!signal?.aborted) return;
-	throw getAbortReason(signal, fallbackReason);
-}
-
-export function getStartupExecuteOptions(
-	options: KernelLifecycleOptions,
-): Pick<KernelExecuteOptions, "signal" | "timeoutMs"> {
-	return {
-		signal: combineAbortSignal(options, undefined, "Python kernel startup aborted"),
-		timeoutMs: getRemainingTimeMs(options.deadlineMs),
-	};
-}
-
-export function getStartupCleanupTimeoutMs(deadlineMs?: number): number {
-	const remainingMs = getRemainingTimeMs(deadlineMs);
-	if (remainingMs === undefined || remainingMs <= 0) return STARTUP_CLEANUP_TIMEOUT_MS;
-	return Math.min(STARTUP_CLEANUP_TIMEOUT_MS, remainingMs);
-}
-
-export interface JupyterHeader {
-	msg_id: string;
-	session: string;
-	username: string;
-	date: string;
-	msg_type: string;
-	version: string;
-}
-
-export interface JupyterMessage {
-	channel: string;
-	header: JupyterHeader;
-	parent_header: Record<string, unknown>;
-	metadata: Record<string, unknown>;
-	content: Record<string, unknown>;
-	buffers?: Uint8Array[];
-}
-
-/** Status event emitted by prelude helpers for TUI rendering. */
+/**
+ * Status event surfaced on the x-omp-status IOPub channel. Python's in-core
+ * prelude uses the legacy `op` discriminator; plugin kernels use the
+ * cross-language `kind` convention. Either field may be present.
+ *
+ * TODO(kernel-plugins): rename to a kernel-neutral identifier and move the
+ * Python-specific naming out of kernel/.
+ */
 export interface PythonStatusEvent {
-	/** Operation name (e.g., "find", "read", "write") */
-	op: string;
-	/** Additional data fields (count, path, pattern, etc.) */
+	op?: string;
+	kind?: string;
 	[key: string]: unknown;
 }
 
@@ -189,82 +103,12 @@ interface JupyterKernelStartOptions extends KernelLifecycleOptions {
 }
 
 export { renderKernelDisplay } from "./display";
-
-export function deserializeWebSocketMessage(data: ArrayBuffer): JupyterMessage | null {
-	const view = new DataView(data);
-	const offsetCount = view.getUint32(0, true);
-
-	if (offsetCount < 1) return null;
-
-	const offsets: number[] = [];
-	for (let i = 0; i < offsetCount; i++) {
-		offsets.push(view.getUint32(4 + i * 4, true));
-	}
-
-	const msgStart = offsets[0];
-	const msgEnd = offsets.length > 1 ? offsets[1] : data.byteLength;
-	const msgBytes = new Uint8Array(data, msgStart, msgEnd - msgStart);
-	const msgText = TEXT_DECODER.decode(msgBytes);
-
-	try {
-		const msg = JSON.parse(msgText) as {
-			channel: string;
-			header: JupyterHeader;
-			parent_header: Record<string, unknown>;
-			metadata: Record<string, unknown>;
-			content: Record<string, unknown>;
-		};
-
-		const buffers: Uint8Array[] = [];
-		for (let i = 1; i < offsets.length; i++) {
-			const start = offsets[i];
-			const end = i + 1 < offsets.length ? offsets[i + 1] : data.byteLength;
-			buffers.push(new Uint8Array(data, start, end - start));
-		}
-
-		return { ...msg, buffers };
-	} catch {
-		return null;
-	}
-}
-
-export function serializeWebSocketMessage(msg: JupyterMessage): ArrayBuffer {
-	const msgText = JSON.stringify({
-		channel: msg.channel,
-		header: msg.header,
-		parent_header: msg.parent_header,
-		metadata: msg.metadata,
-		content: msg.content,
-	});
-
-	const buffers = msg.buffers ?? [];
-	const offsetCount = 1 + buffers.length;
-	const headerSize = 4 + offsetCount * 4;
-	const msgBytes = Buffer.byteLength(msgText);
-	let totalSize = headerSize + msgBytes;
-	for (const buf of buffers) {
-		totalSize += buf.length;
-	}
-
-	const result = new ArrayBuffer(totalSize);
-	const view = new DataView(result);
-	const bytes = new Uint8Array(result);
-
-	view.setUint32(0, offsetCount, true);
-
-	let offset = headerSize;
-	view.setUint32(4, offset, true);
-	TEXT_ENCODER.encodeInto(msgText, bytes.subarray(offset));
-	offset += msgBytes;
-
-	for (let i = 0; i < buffers.length; i++) {
-		view.setUint32(4 + (i + 1) * 4, offset, true);
-		bytes.set(buffers[i], offset);
-		offset += buffers[i].length;
-	}
-
-	return result;
-}
+export {
+	deserializeWebSocketMessage,
+	type JupyterHeader,
+	type JupyterMessage,
+	serializeWebSocketMessage,
+} from "./wire-protocol";
 
 export class JupyterKernel {
 	readonly #authToken?: string;
@@ -299,6 +143,17 @@ export class JupyterKernel {
 	#authHeaders(): Record<string, string> {
 		if (!this.#authToken) return {};
 		return { Authorization: `token ${this.#authToken}` };
+	}
+
+	#makeHeader(msgType: string, msgId: string = Snowflake.next()): JupyterHeader {
+		return {
+			msg_id: msgId,
+			session: this.sessionId,
+			username: this.username,
+			date: new Date().toISOString(),
+			msg_type: msgType,
+			version: "5.5",
+		};
 	}
 
 	static async start(options: JupyterKernelStartOptions): Promise<JupyterKernel> {
@@ -598,6 +453,46 @@ export class JupyterKernel {
 		return this.#alive && !this.#disposed && this.#ws?.readyState === WebSocket.OPEN;
 	}
 
+	/**
+	 * Round-trip probe: verifies the kernel can run code, not just that the
+	 * socket is accepting. jupyter-kernel-gateway opens the WebSocket before
+	 * the kernel's language runtime is ready, so a dead kernel can still
+	 * report connected. Callers that need to gate UI on "working" (rather
+	 * than "connected") should prefer this over isAlive().
+	 *
+	 * The narrow error shape is intentional — callers that want structured
+	 * errors with tracebacks should call execute() and inspect result.error.
+	 */
+	async healthCheck(options?: { timeoutMs?: number; signal?: AbortSignal }): Promise<{
+		ok: boolean;
+		latencyMs: number;
+		error?: { name: string; message: string };
+	}> {
+		const start = Date.now();
+		try {
+			const result = await this.execute("", {
+				signal: options?.signal,
+				timeoutMs: options?.timeoutMs ?? 10_000,
+				silent: true,
+				storeHistory: false,
+			});
+			return {
+				ok: result.status === "ok" && !result.cancelled && !result.timedOut,
+				latencyMs: Date.now() - start,
+				error: result.error ? { name: result.error.name, message: result.error.value } : undefined,
+			};
+		} catch (err) {
+			return {
+				ok: false,
+				latencyMs: Date.now() - start,
+				error: {
+					name: err instanceof Error ? err.name : "Error",
+					message: err instanceof Error ? err.message : String(err),
+				},
+			};
+		}
+	}
+
 	async execute(code: string, options?: KernelExecuteOptions): Promise<KernelExecuteResult> {
 		if (!this.isAlive()) {
 			throw new Error("Kernel is not running");
@@ -606,14 +501,7 @@ export class JupyterKernel {
 		const msgId = Snowflake.next();
 		const msg: JupyterMessage = {
 			channel: "shell",
-			header: {
-				msg_id: msgId,
-				session: this.sessionId,
-				username: this.username,
-				date: new Date().toISOString(),
-				msg_type: "execute_request",
-				version: "5.5",
-			},
+			header: this.#makeHeader("execute_request", msgId),
 			parent_header: {},
 			metadata: {},
 			content: {
@@ -762,14 +650,7 @@ export class JupyterKernel {
 					}
 					this.#sendMessage({
 						channel: "stdin",
-						header: {
-							msg_id: Snowflake.next(),
-							session: this.sessionId,
-							username: this.username,
-							date: new Date().toISOString(),
-							msg_type: "input_reply",
-							version: "5.5",
-						},
+						header: this.#makeHeader("input_reply"),
 						parent_header: response.header as unknown as Record<string, unknown>,
 						metadata: {},
 						content: { value: "" },
@@ -802,14 +683,7 @@ export class JupyterKernel {
 		try {
 			const msg: JupyterMessage = {
 				channel: "control",
-				header: {
-					msg_id: Snowflake.next(),
-					session: this.sessionId,
-					username: this.username,
-					date: new Date().toISOString(),
-					msg_type: "interrupt_request",
-					version: "5.5",
-				},
+				header: this.#makeHeader("interrupt_request"),
 				parent_header: {},
 				metadata: {},
 				content: {},
