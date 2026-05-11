@@ -54,6 +54,7 @@ describe("AgentSession before_agent_start attribution fallback", () => {
 		const extensionRunner = {
 			emitBeforeAgentStart,
 			emit: vi.fn().mockResolvedValue(undefined),
+			hasHandlers: vi.fn(() => false),
 		} as unknown as ExtensionRunner;
 
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5");

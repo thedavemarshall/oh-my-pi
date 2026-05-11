@@ -483,6 +483,7 @@ export class ExtensionRunner {
 	}
 
 	async emit<TEvent extends RunnerEmitEvent>(event: TEvent): Promise<RunnerEmitResult<TEvent>> {
+		if (!this.hasHandlers(event.type)) return undefined as RunnerEmitResult<TEvent>;
 		const ctx = this.createContext();
 		let result: SessionBeforeEventResult | SessionCompactingResult | undefined;
 
@@ -673,11 +674,8 @@ export class ExtensionRunner {
 
 	/**
 	 * Emit input event. Transforms chain, "handled" short-circuits.
-	 *
-	 * Returns both the (possibly transformed) input and the `inputId` that was
-	 * assigned to this submission — callers can pass that id into the turn that
-	 * the input triggers via {@link TurnStartEvent.triggerInputId} so that
-	 * exporters can correlate user inputs with the turns they cause.
+	 * Returns the assigned `inputId` so callers can correlate it with the turn it triggers
+	 * via {@link TurnStartEvent.triggerInputId}.
 	 */
 	async emitInput(
 		text: string,

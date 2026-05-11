@@ -480,12 +480,6 @@ export type SessionEvent =
 // Shared Event Shapes
 // ============================================================================
 
-/**
- * The `inputId` / `triggerInputId` correlation pair links an `InputEvent` to
- * the `TurnStartEvent` it triggers. Both are UUIDv7 strings — time-sortable,
- * so exporters can order them by id alone.
- */
-
 /** Normalized error payload for failure-signaling events. */
 export interface EventError {
 	name?: string;
@@ -705,6 +699,7 @@ export interface TodoReminderEvent {
 /** Fired when user executes a bash command via ! or !! prefix */
 export interface UserBashEvent {
 	type: "user_bash";
+	sessionId: string;
 	/** The command to execute */
 	command: string;
 	/** True if !! prefix was used (excluded from LLM context) */
@@ -720,6 +715,7 @@ export interface UserBashEvent {
 /** Fired when user executes Python code via $ or $$ prefix */
 export interface UserPythonEvent {
 	type: "user_python";
+	sessionId: string;
 	/** The Python code to execute */
 	code: string;
 	/** True if $$ prefix was used (excluded from LLM context) */

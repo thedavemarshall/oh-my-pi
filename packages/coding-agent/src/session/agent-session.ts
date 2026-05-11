@@ -1991,11 +1991,12 @@ export class AgentSession {
 			await this.#extensionRunner.emit(hookEvent);
 		} else if (event.type === "turn_end") {
 			const assistantMsg = event.message as AssistantMessage | undefined;
+			const { modelId, provider } = this.#resolveModelMeta(assistantMsg);
 			const hookEvent: TurnEndEvent = {
 				type: "turn_end",
 				turnIndex: this.#turnIndex,
-				modelId: assistantMsg?.model ?? this.model?.id ?? "",
-				provider: assistantMsg?.provider ?? resolveProvider(this.model),
+				modelId,
+				provider,
 				message: event.message,
 				toolResults: event.toolResults,
 				usage: assistantMsg?.usage,
@@ -2005,7 +2006,6 @@ export class AgentSession {
 			await this.#extensionRunner.emit(hookEvent);
 			this.#turnIndex++;
 		} else if (event.type === "message_start") {
-			this.#firstTokenEmittedForCurrentRequest = false;
 			await this.#extensionRunner.emit({
 				type: "message_start",
 				message: event.message,
@@ -2097,28 +2097,29 @@ export class AgentSession {
 
 	async #maybeEmitMessageFirstToken(): Promise<void> {
 		if (this.#firstTokenEmittedForCurrentRequest) return;
-		// Minimal test mocks may omit `hasHandlers` — treat that as "no subscribers".
-		const runner = this.#extensionRunner;
-		if (!runner || typeof runner.hasHandlers !== "function" || !runner.hasHandlers("message_first_token")) {
-			this.#firstTokenEmittedForCurrentRequest = true;
-			return;
-		}
 		this.#firstTokenEmittedForCurrentRequest = true;
-		const model = this.model;
-		await runner.emit({
-			type: "message_first_token",
-			modelId: model?.id ?? "",
-			provider: resolveProvider(model),
-		});
+		const runner = this.#extensionRunner;
+		if (!runner?.hasHandlers("message_first_token")) return;
+		const { modelId, provider } = this.#resolveModelMeta();
+		await runner.emit({ type: "message_first_token", modelId, provider });
 	}
 
 	#computeAgentEndReason(messages: AgentMessage[]): EndReason {
-		for (let i = messages.length - 1; i >= 0; i -= 1) {
-			if (messages[i]?.role === "assistant") {
-				return toEndReason((messages[i] as AssistantMessage).stopReason);
-			}
-		}
-		return "completed";
+		const lastAssistant = messages.findLast((m): m is AssistantMessage => m.role === "assistant");
+		return lastAssistant ? toEndReason(lastAssistant.stopReason) : "completed";
+	}
+
+	/** Resolve `{ modelId, provider }` for an event, preferring the message's recorded values over the session's current model. */
+	#resolveModelMeta(message?: AssistantMessage): { modelId: string; provider: Provider } {
+		return {
+			modelId: message?.model ?? this.model?.id ?? "",
+			provider: message?.provider ?? resolveProvider(this.model),
+		};
+	}
+
+	/** 1-indexed attempt number for the in-flight provider request, or `undefined` on the initial attempt. */
+	get #currentAttemptNumber(): number | undefined {
+		return this.#providerRequestAttempts > 1 ? this.#providerRequestAttempts : undefined;
 	}
 
 	/**
@@ -2970,7 +2971,7 @@ export class AgentSession {
 	 * that observability exporters can correlate the input with the turn it
 	 * produces.
 	 */
-	setPendingInputId(inputId: string | undefined): void {
+	setPendingInputId(inputId: string): void {
 		this.#turnTriggerInputId = inputId;
 	}
 
@@ -2979,32 +2980,29 @@ export class AgentSession {
 	 * `after_provider_request` fires from `#emitAfterProviderRequestForMessage`
 	 * on `message_end`.
 	 */
-	async emitProviderRequest(
-		runner: ExtensionRunner,
-		payload: unknown,
-		requestModel: Model | undefined,
-	): Promise<unknown> {
+	async emitProviderRequest(payload: unknown, requestModel: Model | undefined): Promise<unknown> {
 		this.#firstTokenEmittedForCurrentRequest = false;
 		this.#providerRequestAttempts += 1;
+		const runner = this.#extensionRunner;
+		if (!runner) return payload;
 		const model = requestModel ?? this.model;
 		return await runner.emitBeforeProviderRequest({
 			modelId: model?.id ?? "",
 			provider: resolveProvider(model),
 			payload,
-			attemptNumber: this.#providerRequestAttempts > 1 ? this.#providerRequestAttempts : undefined,
+			attemptNumber: this.#currentAttemptNumber,
 		});
 	}
 
 	async #emitAfterProviderRequestForMessage(message: AssistantMessage): Promise<void> {
 		const runner = this.#extensionRunner;
-		if (!runner || typeof runner.hasHandlers !== "function" || !runner.hasHandlers("after_provider_request")) {
-			return;
-		}
+		if (!runner?.hasHandlers("after_provider_request")) return;
 		const isError = message.stopReason === "error" || message.stopReason === "aborted";
+		const { modelId, provider } = this.#resolveModelMeta(message);
 		const event: AfterProviderRequestEvent = {
 			type: "after_provider_request",
-			modelId: message.model ?? this.model?.id ?? "",
-			provider: message.provider ?? resolveProvider(this.model),
+			modelId,
+			provider,
 			isError,
 			usage: message.usage,
 			error: isError
@@ -3012,8 +3010,8 @@ export class AgentSession {
 				: undefined,
 			providerRequestId: undefined,
 			responseModelId: message.model,
-			stopReasons: message.stopReason !== undefined ? ([message.stopReason] as StopReason[]) : undefined,
-			attemptNumber: this.#providerRequestAttempts > 1 ? this.#providerRequestAttempts : undefined,
+			stopReasons: message.stopReason !== undefined ? [message.stopReason] : undefined,
+			attemptNumber: this.#currentAttemptNumber,
 		};
 		await runner.emitAfterProviderRequest(event);
 	}
@@ -6499,6 +6497,7 @@ export class AgentSession {
 		if (this.#extensionRunner?.hasHandlers("user_bash")) {
 			const hookResult = await this.#extensionRunner.emitUserBash({
 				type: "user_bash",
+				sessionId: this.sessionId,
 				command,
 				excludeFromContext,
 				cwd,
@@ -6621,6 +6620,7 @@ export class AgentSession {
 			if (this.#extensionRunner?.hasHandlers("user_python")) {
 				const hookResult = await this.#extensionRunner.emitUserPython({
 					type: "user_python",
+					sessionId: this.sessionId,
 					code,
 					excludeFromContext,
 					cwd,
