@@ -81,6 +81,7 @@ describe("AgentSession user shortcut hooks", () => {
 
 		expect(emitUserBash).toHaveBeenCalledWith({
 			type: "user_bash",
+			sessionId: expect.any(String),
 			command: "echo hello",
 			excludeFromContext: true,
 			cwd: expect.any(String),
@@ -120,6 +121,7 @@ describe("AgentSession user shortcut hooks", () => {
 
 		expect(emitUserPython).toHaveBeenCalledWith({
 			type: "user_python",
+			sessionId: expect.any(String),
 			code: "print('hi')",
 			excludeFromContext: true,
 			cwd: expect.any(String),

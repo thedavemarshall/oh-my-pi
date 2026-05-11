@@ -223,6 +223,7 @@ export class InputController {
 				if (result?.images !== undefined) {
 					inputImages = result.images;
 				}
+				this.ctx.session.setPendingInputId(result.inputId);
 			}
 
 			if (!text) return;

@@ -9,6 +9,7 @@ import type { ModelRegistry } from "../../config/model-registry";
 import { type Theme, theme } from "../../modes/theme/theme";
 import type { SessionManager } from "../../session/session-manager";
 import type {
+	AfterProviderRequestEvent,
 	AfterProviderResponseEvent,
 	BeforeAgentStartEvent,
 	BeforeAgentStartEventResult,
@@ -125,18 +126,16 @@ export type SwitchSessionHandler = (sessionPath: string) => Promise<{ cancelled:
 
 export type ShutdownHandler = () => void;
 
-/**
- * Helper function to emit session_shutdown event to extensions.
- * Returns true if the event was emitted, false if there were no handlers.
- */
 export async function emitSessionShutdownEvent(extensionRunner: ExtensionRunner | undefined): Promise<boolean> {
 	if (extensionRunner?.hasHandlers("session_shutdown")) {
-		await extensionRunner.emit({
-			type: "session_shutdown",
-		});
+		await extensionRunner.emit({ type: "session_shutdown" });
 		return true;
 	}
 	return false;
+}
+
+export async function emitSessionStartEvent(extensionRunner: ExtensionRunner): Promise<void> {
+	await extensionRunner.emit({ type: "session_start" });
 }
 
 const noOpUIContext: ExtensionUIContext = {
@@ -672,30 +671,40 @@ export class ExtensionRunner {
 		return { skillPaths, promptPaths, themePaths };
 	}
 
-	/** Emit input event. Transforms chain, "handled" short-circuits. */
+	/**
+	 * Emit input event. Transforms chain, "handled" short-circuits.
+	 *
+	 * Returns both the (possibly transformed) input and the `inputId` that was
+	 * assigned to this submission — callers can pass that id into the turn that
+	 * the input triggers via {@link TurnStartEvent.triggerInputId} so that
+	 * exporters can correlate user inputs with the turns they cause.
+	 */
 	async emitInput(
 		text: string,
 		images: ImageContent[] | undefined,
 		source: "interactive" | "rpc" | "extension",
-	): Promise<InputEventResult> {
+	): Promise<InputEventResult & { inputId: string }> {
 		const ctx = this.createContext();
+		const inputId = Bun.randomUUIDv7();
 		let currentText = text;
 		let currentImages = images;
 
 		for (const ext of this.extensions) {
 			for (const handler of ext.handlers.get("input") ?? []) {
-				const event: InputEvent = { type: "input", text: currentText, images: currentImages, source };
+				const event: InputEvent = { type: "input", inputId, text: currentText, images: currentImages, source };
 				const result = (await this.#runHandlerWithTimeout(handler, event, ctx, ext, extensionHandlerTimeoutMs)) as
 					| InputEventResult
 					| undefined;
-				if (result?.handled) return result;
+				if (result?.handled) return { ...result, inputId };
 				if (result?.text !== undefined) {
 					currentText = result.text;
 					currentImages = result.images ?? currentImages;
 				}
 			}
 		}
-		return currentText !== text || currentImages !== images ? { text: currentText, images: currentImages } : {};
+		return currentText !== text || currentImages !== images
+			? { text: currentText, images: currentImages, inputId }
+			: { inputId };
 	}
 
 	async emitContext(messages: AgentMessage[]): Promise<AgentMessage[]> {
@@ -726,7 +735,10 @@ export class ExtensionRunner {
 			if (!handlers || handlers.length === 0) continue;
 
 			for (const handler of handlers) {
-				const event: ContextEvent = { type: "context", messages: currentMessages };
+				const event: ContextEvent = {
+					type: "context",
+					messages: currentMessages,
+				};
 				const handlerResult = await this.#runHandlerWithTimeout(
 					handler,
 					event,
@@ -744,22 +756,20 @@ export class ExtensionRunner {
 		return currentMessages;
 	}
 
-	async emitBeforeProviderRequest(payload: unknown): Promise<BeforeProviderRequestEventResult> {
+	async emitBeforeProviderRequest(
+		event: Omit<BeforeProviderRequestEvent, "type">,
+	): Promise<BeforeProviderRequestEventResult> {
 		const ctx = this.createContext();
-		let currentPayload = payload;
+		let currentPayload = event.payload;
 
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get("before_provider_request");
 			if (!handlers || handlers.length === 0) continue;
 
 			for (const handler of handlers) {
-				const event: BeforeProviderRequestEvent = {
-					type: "before_provider_request",
-					payload: currentPayload,
-				};
 				const handlerResult = await this.#runHandlerWithTimeout(
 					handler,
-					event,
+					{ ...event, type: "before_provider_request", payload: currentPayload } as BeforeProviderRequestEvent,
 					ctx,
 					ext,
 					extensionHandlerTimeoutMs,
@@ -773,6 +783,27 @@ export class ExtensionRunner {
 		return currentPayload;
 	}
 
+	/**
+	 * Emit after_provider_request. Observational — return values from handlers are ignored.
+	 * Fires once per provider round-trip regardless of success/failure.
+	 */
+	async emitAfterProviderRequest(event: AfterProviderRequestEvent): Promise<void> {
+		if (!this.hasHandlers("after_provider_request")) return;
+		const ctx = this.createContext();
+		for (const ext of this.extensions) {
+			const handlers = ext.handlers.get("after_provider_request");
+			if (!handlers || handlers.length === 0) continue;
+			for (const handler of handlers) {
+				await this.#runHandlerWithTimeout(handler, event, ctx, ext, extensionHandlerTimeoutMs);
+			}
+		}
+	}
+
+	/**
+	 * Emit after_provider_response. Observational — fires on HTTP-response-headers
+	 * received (early signal), distinct from {@link emitAfterProviderRequest}
+	 * which fires once the full provider round-trip completes.
+	 */
 	async emitAfterProviderResponse(response: ProviderResponseMetadata, _model?: Model): Promise<void> {
 		const ctx = this.createContext();
 

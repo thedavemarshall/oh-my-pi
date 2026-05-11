@@ -17,6 +17,7 @@ import type {
 	ExtensionUIDialogOptions,
 	ExtensionWidgetOptions,
 } from "../../extensibility/extensions";
+import { emitSessionShutdownEvent, emitSessionStartEvent } from "../../extensibility/extensions";
 import { runExtensionCompact, runExtensionSetModel } from "../../extensibility/extensions/compact-handler";
 import { type Theme, theme } from "../../modes/theme/theme";
 import type { AgentSession } from "../../session/agent-session";
@@ -486,10 +487,7 @@ export async function runRpcMode(session: AgentSession): Promise<never> {
 		extensionRunner.onError(err => {
 			output({ type: "extension_error", extensionPath: err.extensionPath, event: err.event, error: err.error });
 		});
-		// Emit session_start event
-		await extensionRunner.emit({
-			type: "session_start",
-		});
+		await emitSessionStartEvent(extensionRunner);
 	}
 
 	// Output all agent events as JSON
@@ -834,11 +832,7 @@ export async function runRpcMode(session: AgentSession): Promise<never> {
 	 */
 	async function checkShutdownRequested(): Promise<void> {
 		if (!shutdownState.requested) return;
-
-		if (extensionRunner?.hasHandlers("session_shutdown")) {
-			await extensionRunner.emit({ type: "session_shutdown" });
-		}
-
+		await emitSessionShutdownEvent(extensionRunner);
 		process.exit(0);
 	}
 

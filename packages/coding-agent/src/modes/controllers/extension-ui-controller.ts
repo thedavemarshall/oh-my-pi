@@ -16,6 +16,7 @@ import type {
 	SendUserMessageHandler,
 	TerminalInputHandler,
 } from "../../extensibility/extensions";
+import { emitSessionStartEvent } from "../../extensibility/extensions";
 import { HookEditorComponent } from "../../modes/components/hook-editor";
 import { HookInputComponent } from "../../modes/components/hook-input";
 import { HookSelectorComponent } from "../../modes/components/hook-selector";
@@ -234,10 +235,8 @@ export class ExtensionUiController {
 			this.showExtensionError(error.extensionPath, error.error);
 		});
 
-		// Emit session_start event
-		await extensionRunner.emit({
-			type: "session_start",
-		});
+		// Explicit branch/fork transitions fire `session_switch`/`session_branch`, not `session_start`.
+		await emitSessionStartEvent(extensionRunner);
 	}
 
 	setHookWidget(key: string, content: ExtensionWidgetContent, options?: ExtensionWidgetOptions): void {

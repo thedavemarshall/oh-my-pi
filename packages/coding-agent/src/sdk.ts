@@ -1624,8 +1624,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				}
 			: undefined;
 		const onPayload = extensionRunner
-			? async (payload: unknown, _model?: Model) => {
-					return await extensionRunner.emitBeforeProviderRequest(payload);
+			? async (payload: unknown, requestModel?: Model) => {
+					return await session.emitProviderRequest(extensionRunner, payload, requestModel);
 				}
 			: undefined;
 		const onResponse: SimpleStreamOptions["onResponse"] | undefined = extensionRunner

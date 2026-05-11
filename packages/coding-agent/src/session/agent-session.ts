@@ -34,9 +34,11 @@ import type {
 	Message,
 	MessageAttribution,
 	Model,
+	Provider,
 	ProviderSessionState,
 	ServiceTier,
 	SimpleStreamOptions,
+	StopReason,
 	TextContent,
 	ToolCall,
 	ToolChoice,
@@ -82,23 +84,20 @@ import type { LoadedCustomCommand } from "../extensibility/custom-commands";
 import type { CustomTool, CustomToolContext } from "../extensibility/custom-tools/types";
 import { CustomToolAdapter } from "../extensibility/custom-tools/wrapper";
 import type {
+	AfterProviderRequestEvent,
+	EndReason,
 	ExtensionCommandContext,
 	ExtensionRunner,
 	ExtensionUIContext,
-	MessageEndEvent,
-	MessageStartEvent,
-	MessageUpdateEvent,
 	SessionBeforeBranchResult,
 	SessionBeforeCompactResult,
 	SessionBeforeSwitchResult,
 	SessionBeforeTreeResult,
-	ToolExecutionEndEvent,
-	ToolExecutionStartEvent,
-	ToolExecutionUpdateEvent,
 	TreePreparation,
 	TurnEndEvent,
 	TurnStartEvent,
 } from "../extensibility/extensions";
+import { emitSessionShutdownEvent } from "../extensibility/extensions";
 import type { CompactOptions, ContextUsage } from "../extensibility/extensions/types";
 import { ExtensionToolWrapper } from "../extensibility/extensions/wrapper";
 import type { HookCommandContext } from "../extensibility/hooks/types";
@@ -210,6 +209,21 @@ export type AgentSessionEvent =
 
 /** Listener function for agent session events */
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
+
+/**
+ * Map provider {@link StopReason} to observability {@link EndReason}. The `"aborted"`
+ * and `"error"` values are shared between the two unions; `"stop" | "length" | "toolUse"`
+ * all collapse to `"completed"`.
+ */
+function toEndReason(stopReason: StopReason | undefined): EndReason {
+	return stopReason === "aborted" || stopReason === "error" ? stopReason : "completed";
+}
+
+/** Resolve a provider id with a sane default when the session has no active model. */
+function resolveProvider(model: Model | undefined): Provider {
+	return model?.provider ?? "anthropic";
+}
+
 export type AsyncJobSnapshotItem = Pick<AsyncJob, "id" | "type" | "status" | "label" | "startTime">;
 
 export interface AsyncJobSnapshot {
@@ -574,6 +588,9 @@ export class AgentSession {
 	// Extension system
 	#extensionRunner: ExtensionRunner | undefined = undefined;
 	#turnIndex = 0;
+	#turnTriggerInputId: string | undefined = undefined;
+	#providerRequestAttempts = 0;
+	#firstTokenEmittedForCurrentRequest = false;
 
 	#skills: Skill[];
 	#skillWarnings: SkillWarning[];
@@ -1953,71 +1970,85 @@ export class AgentSession {
 		if (!this.#extensionRunner) return;
 		if (event.type === "agent_start") {
 			this.#turnIndex = 0;
+			this.#providerRequestAttempts = 0;
 			await this.#extensionRunner.emit({ type: "agent_start" });
 		} else if (event.type === "agent_end") {
-			await this.#extensionRunner.emit({ type: "agent_end", messages: event.messages });
+			await this.#extensionRunner.emit({
+				type: "agent_end",
+				messages: event.messages,
+				endReason: this.#computeAgentEndReason(event.messages),
+			});
 		} else if (event.type === "turn_start") {
+			this.#providerRequestAttempts = 0;
+			this.#firstTokenEmittedForCurrentRequest = false;
 			const hookEvent: TurnStartEvent = {
 				type: "turn_start",
 				turnIndex: this.#turnIndex,
 				timestamp: Date.now(),
+				triggerInputId: this.#turnTriggerInputId,
 			};
+			this.#turnTriggerInputId = undefined;
 			await this.#extensionRunner.emit(hookEvent);
 		} else if (event.type === "turn_end") {
+			const assistantMsg = event.message as AssistantMessage | undefined;
 			const hookEvent: TurnEndEvent = {
 				type: "turn_end",
 				turnIndex: this.#turnIndex,
+				modelId: assistantMsg?.model ?? this.model?.id ?? "",
+				provider: assistantMsg?.provider ?? resolveProvider(this.model),
 				message: event.message,
 				toolResults: event.toolResults,
+				usage: assistantMsg?.usage,
+				endReason: toEndReason(assistantMsg?.stopReason),
+				thinkingLevel: this.#thinkingLevel,
 			};
 			await this.#extensionRunner.emit(hookEvent);
 			this.#turnIndex++;
 		} else if (event.type === "message_start") {
-			const extensionEvent: MessageStartEvent = {
+			this.#firstTokenEmittedForCurrentRequest = false;
+			await this.#extensionRunner.emit({
 				type: "message_start",
 				message: event.message,
-			};
-			await this.#extensionRunner.emit(extensionEvent);
+			});
 		} else if (event.type === "message_update") {
-			const extensionEvent: MessageUpdateEvent = {
+			await this.#maybeEmitMessageFirstToken();
+			await this.#extensionRunner.emit({
 				type: "message_update",
 				message: event.message,
 				assistantMessageEvent: event.assistantMessageEvent,
-			};
-			await this.#extensionRunner.emit(extensionEvent);
+			});
 		} else if (event.type === "message_end") {
-			const extensionEvent: MessageEndEvent = {
+			await this.#extensionRunner.emit({
 				type: "message_end",
 				message: event.message,
-			};
-			await this.#extensionRunner.emit(extensionEvent);
+			});
+			if (event.message.role === "assistant") {
+				await this.#emitAfterProviderRequestForMessage(event.message as AssistantMessage);
+			}
 		} else if (event.type === "tool_execution_start") {
-			const extensionEvent: ToolExecutionStartEvent = {
+			await this.#extensionRunner.emit({
 				type: "tool_execution_start",
 				toolCallId: event.toolCallId,
 				toolName: event.toolName,
 				args: event.args,
 				intent: event.intent,
-			};
-			await this.#extensionRunner.emit(extensionEvent);
+			});
 		} else if (event.type === "tool_execution_update") {
-			const extensionEvent: ToolExecutionUpdateEvent = {
+			await this.#extensionRunner.emit({
 				type: "tool_execution_update",
 				toolCallId: event.toolCallId,
 				toolName: event.toolName,
 				args: event.args,
 				partialResult: event.partialResult,
-			};
-			await this.#extensionRunner.emit(extensionEvent);
+			});
 		} else if (event.type === "tool_execution_end") {
-			const extensionEvent: ToolExecutionEndEvent = {
+			await this.#extensionRunner.emit({
 				type: "tool_execution_end",
 				toolCallId: event.toolCallId,
 				toolName: event.toolName,
 				result: event.result,
 				isError: event.isError ?? false,
-			};
-			await this.#extensionRunner.emit(extensionEvent);
+			});
 		} else if (event.type === "auto_compaction_start") {
 			await this.#extensionRunner.emit({
 				type: "auto_compaction_start",
@@ -2050,7 +2081,10 @@ export class AgentSession {
 				finalError: event.finalError,
 			});
 		} else if (event.type === "ttsr_triggered") {
-			await this.#extensionRunner.emit({ type: "ttsr_triggered", rules: event.rules });
+			await this.#extensionRunner.emit({
+				type: "ttsr_triggered",
+				rules: event.rules,
+			});
 		} else if (event.type === "todo_reminder") {
 			await this.#extensionRunner.emit({
 				type: "todo_reminder",
@@ -2059,6 +2093,32 @@ export class AgentSession {
 				maxAttempts: event.maxAttempts,
 			});
 		}
+	}
+
+	async #maybeEmitMessageFirstToken(): Promise<void> {
+		if (this.#firstTokenEmittedForCurrentRequest) return;
+		// Minimal test mocks may omit `hasHandlers` — treat that as "no subscribers".
+		const runner = this.#extensionRunner;
+		if (!runner || typeof runner.hasHandlers !== "function" || !runner.hasHandlers("message_first_token")) {
+			this.#firstTokenEmittedForCurrentRequest = true;
+			return;
+		}
+		this.#firstTokenEmittedForCurrentRequest = true;
+		const model = this.model;
+		await runner.emit({
+			type: "message_first_token",
+			modelId: model?.id ?? "",
+			provider: resolveProvider(model),
+		});
+	}
+
+	#computeAgentEndReason(messages: AgentMessage[]): EndReason {
+		for (let i = messages.length - 1; i >= 0; i -= 1) {
+			if (messages[i]?.role === "assistant") {
+				return toEndReason((messages[i] as AssistantMessage).stopReason);
+			}
+		}
+		return "completed";
 	}
 
 	/**
@@ -2141,9 +2201,7 @@ export class AgentSession {
 		this.#pendingBackgroundExchanges = [];
 		this.#evalExecutionDisposing = true;
 		try {
-			if (this.#extensionRunner?.hasHandlers("session_shutdown")) {
-				await this.#extensionRunner.emit({ type: "session_shutdown" });
-			}
+			await emitSessionShutdownEvent(this.#extensionRunner);
 		} catch (error) {
 			logger.warn("Failed to emit session_shutdown event", { error: String(error) });
 		}
@@ -2903,6 +2961,61 @@ export class AgentSession {
 	/** Current session ID */
 	get sessionId(): string {
 		return this.#providerSessionId ?? this.sessionManager.getSessionId();
+	}
+
+	/**
+	 * Note the `inputId` of the user input that triggers the upcoming turn.
+	 * Consumed by the next `turn_start` emission, then cleared. Call from input
+	 * controllers immediately after `extensionRunner.emitInput()` returns, so
+	 * that observability exporters can correlate the input with the turn it
+	 * produces.
+	 */
+	setPendingInputId(inputId: string | undefined): void {
+		this.#turnTriggerInputId = inputId;
+	}
+
+	/**
+	 * Bridge for the provider `onPayload` callback. Emits `before_provider_request`;
+	 * `after_provider_request` fires from `#emitAfterProviderRequestForMessage`
+	 * on `message_end`.
+	 */
+	async emitProviderRequest(
+		runner: ExtensionRunner,
+		payload: unknown,
+		requestModel: Model | undefined,
+	): Promise<unknown> {
+		this.#firstTokenEmittedForCurrentRequest = false;
+		this.#providerRequestAttempts += 1;
+		const model = requestModel ?? this.model;
+		return await runner.emitBeforeProviderRequest({
+			modelId: model?.id ?? "",
+			provider: resolveProvider(model),
+			payload,
+			attemptNumber: this.#providerRequestAttempts > 1 ? this.#providerRequestAttempts : undefined,
+		});
+	}
+
+	async #emitAfterProviderRequestForMessage(message: AssistantMessage): Promise<void> {
+		const runner = this.#extensionRunner;
+		if (!runner || typeof runner.hasHandlers !== "function" || !runner.hasHandlers("after_provider_request")) {
+			return;
+		}
+		const isError = message.stopReason === "error" || message.stopReason === "aborted";
+		const event: AfterProviderRequestEvent = {
+			type: "after_provider_request",
+			modelId: message.model ?? this.model?.id ?? "",
+			provider: message.provider ?? resolveProvider(this.model),
+			isError,
+			usage: message.usage,
+			error: isError
+				? { message: message.errorMessage ?? (message.stopReason === "aborted" ? "aborted" : "error") }
+				: undefined,
+			providerRequestId: undefined,
+			responseModelId: message.model,
+			stopReasons: message.stopReason !== undefined ? ([message.stopReason] as StopReason[]) : undefined,
+			attemptNumber: this.#providerRequestAttempts > 1 ? this.#providerRequestAttempts : undefined,
+		};
+		await runner.emitAfterProviderRequest(event);
 	}
 
 	/** Current session display name, if set */
@@ -4458,6 +4571,7 @@ export class AgentSession {
 			if (this.#extensionRunner?.hasHandlers("session_before_compact")) {
 				const result = (await this.#extensionRunner.emit({
 					type: "session_before_compact",
+					sessionId: this.sessionId,
 					preparation,
 					branchEntries: pathEntries,
 					customInstructions,
@@ -4553,6 +4667,7 @@ export class AgentSession {
 			if (this.#extensionRunner && savedCompactionEntry) {
 				await this.#extensionRunner.emit({
 					type: "session_compact",
+					sessionId: this.sessionId,
 					compactionEntry: savedCompactionEntry,
 					fromExtension,
 				});
@@ -5602,6 +5717,7 @@ export class AgentSession {
 			if (this.#extensionRunner?.hasHandlers("session_before_compact")) {
 				const hookResult = (await this.#extensionRunner.emit({
 					type: "session_before_compact",
+					sessionId: this.sessionId,
 					preparation,
 					branchEntries: pathEntries,
 					customInstructions: undefined,
@@ -5787,6 +5903,7 @@ export class AgentSession {
 			if (this.#extensionRunner && savedCompactionEntry) {
 				await this.#extensionRunner.emit({
 					type: "session_compact",
+					sessionId: this.sessionId,
 					compactionEntry: savedCompactionEntry,
 					fromExtension,
 				});
@@ -7248,6 +7365,7 @@ export class AgentSession {
 		if (this.#extensionRunner?.hasHandlers("session_before_tree")) {
 			const result = (await this.#extensionRunner.emit({
 				type: "session_before_tree",
+				sessionId: this.sessionId,
 				preparation,
 				signal: this.#branchSummaryAbortController.signal,
 			})) as SessionBeforeTreeResult | undefined;
@@ -7351,6 +7469,7 @@ export class AgentSession {
 		if (this.#extensionRunner?.hasHandlers("session_tree")) {
 			await this.#extensionRunner.emit({
 				type: "session_tree",
+				sessionId: this.sessionId,
 				newLeafId: this.sessionManager.getLeafId(),
 				oldLeafId,
 				summaryEntry,

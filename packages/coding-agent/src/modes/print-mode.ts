@@ -7,6 +7,7 @@
  */
 import type { AssistantMessage, ImageContent } from "@oh-my-pi/pi-ai";
 import { sanitizeText } from "@oh-my-pi/pi-natives";
+import { emitSessionStartEvent } from "../extensibility/extensions";
 import { runExtensionCompact, runExtensionSetModel } from "../extensibility/extensions/compact-handler";
 import type { AgentSession } from "../session/agent-session";
 
@@ -118,10 +119,7 @@ export async function runPrintMode(session: AgentSession, options: PrintModeOpti
 		extensionRunner.onError(err => {
 			process.stderr.write(`Extension error (${err.extensionPath}): ${err.error}\n`);
 		});
-		// Emit session_start event
-		await extensionRunner.emit({
-			type: "session_start",
-		});
+		await emitSessionStartEvent(extensionRunner);
 	}
 
 	// Always subscribe to enable session persistence via _handleAgentEvent

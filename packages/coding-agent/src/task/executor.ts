@@ -15,6 +15,7 @@ import type { PromptTemplate } from "../config/prompt-templates";
 import { Settings } from "../config/settings";
 import { SETTINGS_SCHEMA, type SettingPath } from "../config/settings-schema";
 import type { CustomTool } from "../extensibility/custom-tools/types";
+import { emitSessionStartEvent } from "../extensibility/extensions";
 import { runExtensionCompact, runExtensionSetModel } from "../extensibility/extensions/compact-handler";
 import type { Skill } from "../extensibility/skills";
 import type { HindsightSessionState } from "../hindsight/state";
@@ -1113,7 +1114,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				extensionRunner.onError(err => {
 					logger.error("Extension error", { path: err.extensionPath, error: err.error });
 				});
-				await extensionRunner.emit({ type: "session_start" });
+				await emitSessionStartEvent(extensionRunner);
 			}
 
 			const MAX_YIELD_RETRIES = 3;

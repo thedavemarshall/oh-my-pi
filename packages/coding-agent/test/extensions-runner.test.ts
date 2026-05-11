@@ -382,7 +382,11 @@ describe("ExtensionRunner", () => {
 				modelRegistry,
 			);
 
-			const payload = await runner.emitBeforeProviderRequest({ chain: ["base"] });
+			const payload = await runner.emitBeforeProviderRequest({
+				modelId: "test-model",
+				provider: "anthropic",
+				payload: { chain: ["base"] },
+			});
 			expect(payload).toEqual({ chain: ["base", "ext1", "ext2"] });
 		});
 
@@ -418,7 +422,11 @@ describe("ExtensionRunner", () => {
 				errors.push(err);
 			});
 
-			const payload = await runner.emitBeforeProviderRequest({ original: true });
+			const payload = await runner.emitBeforeProviderRequest({
+				modelId: "test-model",
+				provider: "anthropic",
+				payload: { original: true },
+			});
 			expect(payload).toEqual({ original: true, preserved: true });
 			expect(errors).toHaveLength(1);
 			expect(errors[0]?.event).toBe("before_provider_request");
@@ -723,7 +731,14 @@ describe("ExtensionRunner", () => {
 				},
 			);
 
-			await runner.emit({ type: "session_start" });
+			await runner.emit({
+				type: "session_start",
+				sessionId: sessionManager.getSessionId(),
+				sessionFile: sessionManager.getSessionFile() ?? "",
+				timestamp: Date.now(),
+				startReason: "new",
+				sessionMode: "interactive",
+			});
 
 			expect(sessionManager.getSessionName()).toBe("Named by extension");
 			expect(sessionManager.getHeader()?.title).toBe("Named by extension");

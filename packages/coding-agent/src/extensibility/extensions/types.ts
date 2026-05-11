@@ -15,10 +15,13 @@ import type {
 	Context,
 	ImageContent,
 	Model,
+	Provider,
 	ProviderResponseMetadata,
 	SimpleStreamOptions,
+	StopReason,
 	TextContent,
 	ToolResultMessage,
+	Usage,
 } from "@oh-my-pi/pi-ai";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@oh-my-pi/pi-ai/utils/oauth/types";
 import type * as piCodingAgent from "@oh-my-pi/pi-coding-agent";
@@ -474,6 +477,30 @@ export type SessionEvent =
 	| SessionTreeEvent;
 
 // ============================================================================
+// Shared Event Shapes
+// ============================================================================
+
+/**
+ * The `inputId` / `triggerInputId` correlation pair links an `InputEvent` to
+ * the `TurnStartEvent` it triggers. Both are UUIDv7 strings — time-sortable,
+ * so exporters can order them by id alone.
+ */
+
+/** Normalized error payload for failure-signaling events. */
+export interface EventError {
+	name?: string;
+	message: string;
+	stack?: string;
+}
+
+/**
+ * End-of-lifecycle outcome for agent loops and turns. `"aborted"` / `"error"` align
+ * with {@link StopReason} so emitters can forward a provider stop reason directly;
+ * `"completed"` and `"limit_reached"` are higher-level states.
+ */
+export type EndReason = "completed" | "aborted" | "error" | "limit_reached";
+
+// ============================================================================
 // Agent Events
 // ============================================================================
 
@@ -486,7 +513,34 @@ export interface ContextEvent {
 /** Fired before a provider request is sent. Can replace the payload. */
 export interface BeforeProviderRequestEvent {
 	type: "before_provider_request";
+	modelId: string;
+	provider: Provider;
 	payload: unknown;
+	/** 1-indexed attempt number. Absent on the initial attempt; `2` on the first retry, etc. */
+	attemptNumber?: number;
+}
+
+/** Fired after a provider request completes (success or failure). Observational. */
+export interface AfterProviderRequestEvent {
+	type: "after_provider_request";
+	modelId: string;
+	provider: Provider;
+	isError: boolean;
+	usage?: Usage;
+	error?: EventError;
+	/** 1-indexed attempt number. Absent on the initial attempt; `2` on the first retry, etc. */
+	attemptNumber?: number;
+	/** Provider-assigned request id (e.g. Anthropic x-request-id) for cross-referencing provider logs. */
+	providerRequestId?: string;
+	/**
+	 * Model id reported by the provider response. Often equal to `modelId` (request),
+	 * but providers like Anthropic and OpenAI may return a snapshot-pinned id
+	 * (e.g. request "claude-sonnet-4" → response "claude-sonnet-4-20250514").
+	 * Maps to OTEL `gen_ai.response.model`.
+	 */
+	responseModelId?: string;
+	/** Stop reasons from the provider. Array to match OTEL `gen_ai.response.finish_reasons`; typically length 1. Translate to OTEL spec for export (e.g. "toolUse" → "tool_use"). */
+	stopReasons?: StopReason[];
 }
 
 /** Fired after a provider response is received, before its stream body is consumed. */
@@ -511,6 +565,7 @@ export interface AgentStartEvent {
 export interface AgentEndEvent {
 	type: "agent_end";
 	messages: AgentMessage[];
+	endReason: EndReason;
 }
 
 /** Fired at the start of each turn */
@@ -518,14 +573,22 @@ export interface TurnStartEvent {
 	type: "turn_start";
 	turnIndex: number;
 	timestamp: number;
+	/** The `InputEvent.inputId` that triggered this turn, if any. Absent for internally-initiated turns (retries, continuations). */
+	triggerInputId?: string;
 }
 
 /** Fired at the end of each turn */
 export interface TurnEndEvent {
 	type: "turn_end";
 	turnIndex: number;
+	modelId: string;
+	provider: Provider;
 	message: AgentMessage;
 	toolResults: ToolResultMessage[];
+	/** Token/cost usage for this turn. Absent when the turn ended before any provider response (e.g. cancelled pre-flight, provider error). */
+	usage?: Usage;
+	endReason: EndReason;
+	thinkingLevel?: ThinkingLevel;
 }
 
 /** Fired when a message starts (user, assistant, or toolResult) */
@@ -539,6 +602,17 @@ export interface MessageUpdateEvent {
 	type: "message_update";
 	message: AgentMessage;
 	assistantMessageEvent: AssistantMessageEvent;
+}
+
+/**
+ * Fired once per assistant message on the first streamed delta. Signal only —
+ * consumers measuring TTFT should record their own timestamp on receipt.
+ * Not emitted for non-streaming providers.
+ */
+export interface MessageFirstTokenEvent {
+	type: "message_first_token";
+	modelId: string;
+	provider: Provider;
 }
 
 /** Fired when a message ends */
@@ -661,6 +735,8 @@ export interface UserPythonEvent {
 /** Fired when the user submits input (interactive mode only). */
 export interface InputEvent {
 	type: "input";
+	/** Stable id for correlating this input with the turn it triggers (see `TurnStartEvent.triggerInputId`). */
+	inputId: string;
 	text: string;
 	images?: ImageContent[];
 	source: "interactive" | "rpc" | "extension";
@@ -670,9 +746,16 @@ export interface InputEvent {
 // Tool Events
 // ============================================================================
 
+/** Base shape for `tool_call` / `tool_result` events. */
 interface ToolCallEventBase {
 	type: "tool_call";
 	toolCallId: string;
+	/** Parent tool call id if this tool was invoked from inside another tool (e.g. subagent/research tools). */
+	parentToolCallId?: string;
+	/** MCP server name (mirrors `ToolDefinition.mcpServerName`). */
+	mcpServerName?: string;
+	/** Original MCP tool name (may differ from the rewritten `toolName`). */
+	mcpToolName?: string;
 }
 
 export interface BashToolCallEvent extends ToolCallEventBase {
@@ -720,12 +803,17 @@ export type ToolCallEvent =
 	| FindToolCallEvent
 	| CustomToolCallEvent;
 
+/** Base shape for `tool_result` events. */
 interface ToolResultEventBase {
 	type: "tool_result";
 	toolCallId: string;
 	input: Record<string, unknown>;
 	content: (TextContent | ImageContent)[];
 	isError: boolean;
+	/** MCP server name when this result came from an MCP tool. Mirrors `ToolCallEventBase.mcpServerName`. */
+	mcpServerName?: string;
+	/** Original MCP tool name when this result came from an MCP tool. */
+	mcpToolName?: string;
 }
 
 export interface BashToolResultEvent extends ToolResultEventBase {
@@ -813,6 +901,7 @@ export type ExtensionEvent =
 	| SessionEvent
 	| ContextEvent
 	| BeforeProviderRequestEvent
+	| AfterProviderRequestEvent
 	| AfterProviderResponseEvent
 	| BeforeAgentStartEvent
 	| AgentStartEvent
@@ -821,6 +910,7 @@ export type ExtensionEvent =
 	| TurnEndEvent
 	| MessageStartEvent
 	| MessageUpdateEvent
+	| MessageFirstTokenEvent
 	| MessageEndEvent
 	| ToolExecutionStartEvent
 	| ToolExecutionUpdateEvent
@@ -994,6 +1084,7 @@ export interface ExtensionAPI {
 		event: "before_provider_request",
 		handler: ExtensionHandler<BeforeProviderRequestEvent, BeforeProviderRequestEventResult>,
 	): void;
+	on(event: "after_provider_request", handler: ExtensionHandler<AfterProviderRequestEvent>): void;
 	on(event: "after_provider_response", handler: ExtensionHandler<AfterProviderResponseEvent>): void;
 	on(event: "before_agent_start", handler: ExtensionHandler<BeforeAgentStartEvent, BeforeAgentStartEventResult>): void;
 	on(event: "agent_start", handler: ExtensionHandler<AgentStartEvent>): void;
@@ -1002,6 +1093,7 @@ export interface ExtensionAPI {
 	on(event: "turn_end", handler: ExtensionHandler<TurnEndEvent>): void;
 	on(event: "message_start", handler: ExtensionHandler<MessageStartEvent>): void;
 	on(event: "message_update", handler: ExtensionHandler<MessageUpdateEvent>): void;
+	on(event: "message_first_token", handler: ExtensionHandler<MessageFirstTokenEvent>): void;
 	on(event: "message_end", handler: ExtensionHandler<MessageEndEvent>): void;
 	on(event: "tool_execution_start", handler: ExtensionHandler<ToolExecutionStartEvent>): void;
 	on(event: "tool_execution_update", handler: ExtensionHandler<ToolExecutionUpdateEvent>): void;

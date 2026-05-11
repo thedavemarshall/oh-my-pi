@@ -41,7 +41,7 @@ import type { Model } from "@oh-my-pi/pi-ai";
 import { logger, VERSION } from "@oh-my-pi/pi-utils";
 import { disableProvider, enableProvider } from "../../capability";
 import { Settings } from "../../config/settings";
-import type { ExtensionUIContext } from "../../extensibility/extensions";
+import { type ExtensionUIContext, emitSessionStartEvent } from "../../extensibility/extensions";
 import { runExtensionCompact } from "../../extensibility/extensions/compact-handler";
 import { loadSlashCommands } from "../../extensibility/slash-commands";
 import { MCPManager } from "../../mcp/manager";
@@ -1269,7 +1269,7 @@ export class AcpAgent implements Agent {
 			},
 			acpExtensionUiContext,
 		);
-		await extensionRunner.emit({ type: "session_start" });
+		await emitSessionStartEvent(extensionRunner);
 		record.extensionsConfigured = true;
 	}
 
