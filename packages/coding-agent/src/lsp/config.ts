@@ -127,7 +127,19 @@ function mergeServers(
 	return merged;
 }
 
-function applyRuntimeDefaults(servers: Record<string, ServerConfig>): Record<string, ServerConfig> {
+// Bun stores packages in a global cache without materializing node_modules on
+// disk, so the LSP subprocess can't find TypeScript via standard Node resolution.
+function resolveTsserverPath(cwd: string): string | null {
+	try {
+		const resolved = Bun.resolveSync("typescript", cwd);
+		const tsserverPath = path.join(path.dirname(resolved), "tsserver.js");
+		return fs.existsSync(tsserverPath) ? tsserverPath : null;
+	} catch {
+		return null;
+	}
+}
+
+function applyRuntimeDefaults(servers: Record<string, ServerConfig>, cwd: string): Record<string, ServerConfig> {
 	const updated: Record<string, ServerConfig> = { ...servers };
 
 	if (updated.biome) {
@@ -141,6 +153,20 @@ function applyRuntimeDefaults(servers: Record<string, ServerConfig>): Record<str
 	if (updated.omnisharp?.args) {
 		const args = updated.omnisharp.args.map(arg => (arg === PID_TOKEN ? String(process.pid) : arg));
 		updated.omnisharp = { ...updated.omnisharp, args };
+	}
+
+	const tsServer = updated["typescript-language-server"];
+	if (tsServer) {
+		const existingPath = tsServer.initOptions?.tsserver as { path?: string } | undefined;
+		if (!existingPath?.path) {
+			const tsserverPath = resolveTsserverPath(cwd);
+			if (tsserverPath) {
+				updated["typescript-language-server"] = {
+					...tsServer,
+					initOptions: { ...(tsServer.initOptions ?? {}), tsserver: { path: tsserverPath } },
+				};
+			}
+		}
 	}
 
 	return updated;
@@ -344,7 +370,7 @@ export function loadConfig(cwd: string): LspConfig {
 	if (!hasOverrides) {
 		// Auto-detect: find servers based on project markers AND available binaries
 		const detected: Record<string, ServerConfig> = {};
-		const defaultsWithRuntime = applyRuntimeDefaults(mergedServers);
+		const defaultsWithRuntime = applyRuntimeDefaults(mergedServers, cwd);
 
 		for (const [name, config] of Object.entries(defaultsWithRuntime)) {
 			// Check if project has root markers for this language
@@ -361,7 +387,7 @@ export function loadConfig(cwd: string): LspConfig {
 	}
 
 	// Merge overrides with defaults and filter to available servers
-	const mergedWithRuntime = applyRuntimeDefaults(mergedServers);
+	const mergedWithRuntime = applyRuntimeDefaults(mergedServers, cwd);
 	const available: Record<string, ServerConfig> = {};
 
 	for (const [name, config] of Object.entries(mergedWithRuntime)) {
