@@ -557,7 +557,9 @@ export type AnthropicClientOptionsResult = {
 	baseURL?: string;
 	maxRetries: number;
 	dangerouslyAllowBrowser: boolean;
-	defaultHeaders: Record<string, string>;
+	// `null` signals "explicitly omit" to the Anthropic SDK — required by
+	// validateHeaders for proxies that auth via their own header.
+	defaultHeaders: Record<string, string | null>;
 	logLevel: AnthropicSdkClientOptions["logLevel"];
 	fetch?: AnthropicSdkClientOptions["fetch"];
 	fetchOptions?: AnthropicSdkClientOptions["fetchOptions"];
@@ -1482,7 +1484,12 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 			baseURL: baseUrl,
 			maxRetries: 5,
 			dangerouslyAllowBrowser: true,
-			defaultHeaders,
+			// Null entries satisfy SDK ≥0.94 validateHeaders; auth rides cf-aig-authorization.
+			defaultHeaders: {
+				...defaultHeaders,
+				"X-Api-Key": null,
+				Authorization: null,
+			},
 			logLevel: ANTHROPIC_SDK_LOG_LEVEL,
 			...(debugFetch ? { fetch: debugFetch } : {}),
 		};
